@@ -49,6 +49,7 @@ jobs:
 
       - name: Collect Reddit data (via Tor)
         run: torsocks python collect_reddit_data.py
+        timeout-minutes: 350
 
       # Only proceed with analysis if the collection produced real rows.
       - name: Check if data was collected
@@ -78,7 +79,33 @@ jobs:
             sentiment_analysis_overview.png \
             sentiment_by_category.png \
             sentiment_by_subreddit.png
+
           # Only commit when there are actual changes.
-          git diff --staged --quiet \
-            || git commit -m "chore: update Reddit data and sentiment analysis [$(date -u '+%Y-%m-%d')]"
-          git push
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: update Reddit data and sentiment analysis [$(date -u '+%Y-%m-%d')]"
+
+            # Handle case where new commits were pushed to main while we were running
+            # Try pushing up to 3 times with pull --rebase in between
+            max_attempts=3
+            for attempt in $(seq 1 $max_attempts); do
+              if git push; then
+                echo "Successfully pushed changes"
+                exit 0
+              else
+                echo "::warning::Push failed (attempt $attempt/$max_attempts) - pulling latest changes"
+                if [ $attempt -lt $max_attempts ]; then
+                  # Fetch and rebase on top of the latest main/master
+                  git fetch origin
+                  git rebase origin/$(git remote show origin | grep 'HEAD branch' | cut -d' ' -f5) || {
+                    echo "::error::Rebase failed - manual intervention required"
+                    exit 1
+                  }
+                fi
+              fi
+            done
+
+            echo "::error::Failed to push after $max_attempts attempts"
+            exit 1
+          else
+            echo "No changes to commit"
+          fi
