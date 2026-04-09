@@ -15,7 +15,6 @@ permissions:
 jobs:
   collect-and-analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 300  # 5 hours - allows time to commit before the 6-hour hard limit
 
     steps:
       - name: Checkout repository
@@ -49,20 +48,8 @@ jobs:
           echo "::warning::Tor did not fully bootstrap within 120 s – collection may fail."
 
       - name: Collect Reddit data (via Tor)
-        run: |
-          # Set up trap to ensure data is saved on timeout or interruption
-          trap 'echo "::warning::Collection interrupted or timed out - will attempt to commit partial data"; exit 0' SIGTERM SIGINT
-
-          # Run data collection with timeout monitoring
-          timeout 4h torsocks python collect_reddit_data.py || {
-            exit_code=$?
-            if [ $exit_code -eq 124 ]; then
-              echo "::warning::Data collection timed out after 4 hours - proceeding with partial data"
-              exit 0
-            else
-              exit $exit_code
-            fi
-          }
+        run: torsocks python collect_reddit_data.py
+        timeout-minutes: 350
 
       # Only proceed with analysis if the collection produced real rows.
       - name: Check if data was collected
