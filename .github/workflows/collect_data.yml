@@ -2,12 +2,8 @@ name: Collect Reddit Data
 
 # Run weekly (Sunday at 00:00 UTC) and allow manual triggers.
 #
-# NOTE: Reddit's CDN blocks requests originating from GitHub-hosted runners
-# (datacenter IP ranges).  If the collection step reports 0 submissions, you
-# can work around this by either:
-#   1. Using a self-hosted runner on a residential or non-blocked network, or
-#   2. Authenticating via Reddit OAuth (add REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET
-#      secrets and update collect_reddit_data.py to use the OAuth endpoint).
+# Traffic is routed through Tor (via torsocks) so that Reddit's blocks on
+# GitHub-hosted datacenter IPs are bypassed.
 on:
   schedule:
     - cron: '0 0 * * 0'   # Every Sunday at midnight UTC
@@ -33,8 +29,26 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Collect Reddit data
-        run: python collect_reddit_data.py
+      - name: Install Tor and torsocks
+        run: sudo apt-get install -y tor torsocks
+
+      - name: Start Tor and wait for bootstrap
+        run: |
+          sudo service tor@default start || sudo systemctl start tor@default
+          echo "Waiting for Tor to bootstrap..."
+          for i in $(seq 1 24); do
+            if sudo journalctl -u tor@default --no-pager -n 20 2>/dev/null \
+                | grep -q 'Bootstrapped 100%'; then
+              echo "Tor bootstrapped successfully."
+              exit 0
+            fi
+            echo "  attempt $i/24 – not ready yet, sleeping 5s..."
+            sleep 5
+          done
+          echo "::warning::Tor did not fully bootstrap within 120 s – collection may fail."
+
+      - name: Collect Reddit data (via Tor)
+        run: torsocks python collect_reddit_data.py
 
       # Only proceed with analysis if the collection produced real rows.
       - name: Check if data was collected
@@ -44,8 +58,7 @@ jobs:
             echo "data_collected=true" >> "$GITHUB_OUTPUT"
           else
             echo "data_collected=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No submissions collected – Reddit may be blocking this runner's IP."
-            echo "Consider using a self-hosted runner or Reddit OAuth credentials."
+            echo "::warning::No submissions collected – Tor may not have bootstrapped or Reddit rejected the exit node."
           fi
 
       - name: Run sentiment analysis

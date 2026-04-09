@@ -107,9 +107,11 @@ and writes:
 - `reddit_submissions.csv`
 - `reddit_comments.csv`
 
-> **Note**: GitHub-hosted runners (datacenter IPs) are blocked by Reddit.  Run this script
-> from a personal machine or a self-hosted runner, or use the automated GitHub Actions
-> workflow that runs every Sunday.
+> **Note**: Reddit blocks requests from datacenter IPs (including GitHub-hosted runners).
+> The automated GitHub Actions workflow routes all traffic through **Tor** (via `torsocks`)
+> to bypass this.  To run locally without Tor, use a residential or non-blocked network.
+> To run locally with Tor, install `tor` and `torsocks`, start the Tor service, then:
+> `torsocks python3 collect_reddit_data.py`
 
 ### Run Sentiment Analysis
 
@@ -127,9 +129,10 @@ This will:
 ### Automated Data Collection (GitHub Actions)
 
 A GitHub Actions workflow (`.github/workflows/collect_data.yml`) runs every Sunday at
-midnight UTC.  It collects fresh data, runs sentiment analysis, and commits the updated
-files back to the repository automatically.  The workflow can also be triggered manually
-from the Actions tab.
+midnight UTC.  It installs Tor, waits for the circuit to bootstrap, then collects fresh
+data via `torsocks` to bypass Reddit's datacenter IP block.  The workflow then runs
+sentiment analysis and commits the updated files back to the repository automatically.
+The workflow can also be triggered manually from the Actions tab.
 
 ## Dependencies
 
@@ -173,7 +176,7 @@ spaces.
 1. **VADER Limitations**: May not capture nuanced expressions specific to neurodivergent communication
 2. **Context**: Sentiment analysis can't fully understand context, sarcasm, or complex emotions
 3. **Selection Bias**: Only analyzes public Reddit posts from specific subreddits
-4. **API Access**: Reddit blocks requests from datacenter/CI IP ranges; a self-hosted runner or OAuth credentials are required for automated collection to work
+4. **Tor Reliability**: Tor exit nodes may be occasionally slow or temporarily unavailable; the workflow emits a warning rather than failing in those cases
 
 ## Future Work
 
