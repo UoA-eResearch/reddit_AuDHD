@@ -4,11 +4,9 @@ Script to analyze sentiment of Reddit posts and comments about Autism and ADHD.
 """
 
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from datetime import datetime
 from tqdm import tqdm
 
 # Initialize VADER sentiment analyzer
@@ -73,11 +71,12 @@ def load_and_analyze_data():
 
     # Add category column for Autism vs ADHD
     autism_subs = ['autism', 'aspergers', 'aspergirls', 'AutisticAdults']
+    autism_set = {s.lower() for s in autism_subs}
     submissions_df['category'] = submissions_df['subreddit'].apply(
-        lambda x: 'Autism' if x.lower() in [s.lower() for s in autism_subs] else 'ADHD'
+        lambda x: 'Autism' if x.lower() in autism_set else 'ADHD'
     )
     comments_df['category'] = comments_df['subreddit'].apply(
-        lambda x: 'Autism' if x.lower() in [s.lower() for s in autism_subs] else 'ADHD'
+        lambda x: 'Autism' if x.lower() in autism_set else 'ADHD'
     )
 
     return submissions_df, comments_df
@@ -92,21 +91,25 @@ def create_visualizations(submissions_df, comments_df):
     sns.set_style("whitegrid")
     plt.rcParams['figure.figsize'] = (14, 10)
 
+    # Fixed sentiment order and color mapping so chart colors are always semantically correct
+    SENTIMENT_ORDER = ['negative', 'neutral', 'positive']
+    SENTIMENT_COLORS = {'negative': '#ff9999', 'neutral': '#66b3ff', 'positive': '#99ff99'}
+
     # Create a figure with multiple subplots
     fig, axes = plt.subplots(3, 2, figsize=(16, 14))
     fig.suptitle('Reddit Sentiment Analysis: Autism and ADHD Communities', fontsize=16, fontweight='bold')
 
     # 1. Sentiment distribution for submissions
-    sentiment_counts = submissions_df['sentiment_category'].value_counts()
+    sentiment_counts = submissions_df['sentiment_category'].value_counts().reindex(SENTIMENT_ORDER, fill_value=0)
     axes[0, 0].pie(sentiment_counts.values, labels=sentiment_counts.index, autopct='%1.1f%%',
-                   colors=['#ff9999', '#66b3ff', '#99ff99'])
+                   colors=[SENTIMENT_COLORS[label] for label in sentiment_counts.index])
     axes[0, 0].set_title('Submission Sentiment Distribution')
 
     # 2. Sentiment distribution for comments
     if not comments_df.empty and 'sentiment_category' in comments_df.columns:
-        comment_sentiment_counts = comments_df['sentiment_category'].value_counts()
+        comment_sentiment_counts = comments_df['sentiment_category'].value_counts().reindex(SENTIMENT_ORDER, fill_value=0)
         axes[0, 1].pie(comment_sentiment_counts.values, labels=comment_sentiment_counts.index, autopct='%1.1f%%',
-                       colors=['#ff9999', '#66b3ff', '#99ff99'])
+                       colors=[SENTIMENT_COLORS[label] for label in comment_sentiment_counts.index])
     else:
         axes[0, 1].text(0.5, 0.5, 'No comments collected yet', ha='center', va='center', transform=axes[0, 1].transAxes)
     axes[0, 1].set_title('Comment Sentiment Distribution')

@@ -1,1 +1,1 @@
-id,subreddit,body,author,score,created_utc,created_date,parent_id,link_id,sentiment_score,sentiment_category,category
+id,subreddit,body,author_hash,score,created_utc,created_date,parent_id,link_id,sentiment_score,sentiment_category,category

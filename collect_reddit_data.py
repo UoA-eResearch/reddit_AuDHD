@@ -30,6 +30,7 @@ Seed-only run (1 page per subreddit, no comments – quick proof-of-concept):
 """
 
 import argparse
+import hashlib
 import os
 import socket
 import subprocess
@@ -223,8 +224,13 @@ def collect_submissions(subreddit, max_pages=10):
             if not children:
                 break
             for child in children:
-                post = child.get('data', {})
-                posts[post['id']] = post
+                post = child.get('data')
+                if not isinstance(post, dict):
+                    continue
+                post_id = post.get('id')
+                if not post_id:
+                    continue
+                posts[post_id] = post
             page += 1
             time.sleep(REQUEST_DELAY)
             if not after or page >= max_pages:
@@ -250,6 +256,19 @@ def fetch_post_comments(subreddit, post_id):
     return comments
 
 
+def _hash_author(username):
+    """
+    Return a stable 16-char hex hash of a Reddit username.
+
+    Hashing avoids committing raw usernames to the repository while still
+    preserving uniqueness (for counting unique contributors).
+    Returns an empty string for deleted/unknown accounts.
+    """
+    if not username or username in ('[deleted]', '[removed]'):
+        return ''
+    return hashlib.sha256(username.encode()).hexdigest()[:16]
+
+
 def _utc_date(ts):
     """Convert a UTC Unix timestamp to a YYYY-MM-DD string."""
     try:
@@ -266,7 +285,7 @@ def extract_submission_features(post):
         'subreddit': post.get('subreddit'),
         'title': post.get('title', ''),
         'selftext': post.get('selftext', ''),
-        'author': post.get('author'),
+        'author_hash': _hash_author(post.get('author')),
         'score': post.get('score', 0),
         'upvote_ratio': post.get('upvote_ratio', None),
         'num_comments': post.get('num_comments', 0),
@@ -285,7 +304,7 @@ def extract_comment_features(comment, subreddit):
         'id': comment.get('id'),
         'subreddit': subreddit,
         'body': comment.get('body', ''),
-        'author': comment.get('author'),
+        'author_hash': _hash_author(comment.get('author')),
         'score': comment.get('score', 0),
         'created_utc': created,
         'created_date': _utc_date(created),
@@ -340,26 +359,60 @@ def main():
 
         print(f"  → {sum(1 for c in all_comments if c['subreddit'] == subreddit)} comments so far")
 
-    # --- Persist ---
-    submissions_df = pd.DataFrame(all_submissions).drop_duplicates(subset='id') if all_submissions else pd.DataFrame()
-    comments_df = pd.DataFrame(all_comments).drop_duplicates(subset='id') if all_comments else pd.DataFrame()
+    # --- Schema for empty DataFrames (ensures CSV always has a header row) ---
+    SUBMISSION_COLS = ['id', 'subreddit', 'title', 'selftext', 'author_hash', 'score',
+                       'upvote_ratio', 'num_comments', 'created_utc', 'created_date',
+                       'url', 'is_self', 'permalink']
+    COMMENT_COLS = ['id', 'subreddit', 'body', 'author_hash', 'score',
+                    'created_utc', 'created_date', 'parent_id', 'link_id']
 
-    if submissions_df.empty:
+    new_submissions = (pd.DataFrame(all_submissions, columns=SUBMISSION_COLS)
+                       .drop_duplicates(subset='id') if all_submissions
+                       else pd.DataFrame(columns=SUBMISSION_COLS))
+    new_comments = (pd.DataFrame(all_comments, columns=COMMENT_COLS)
+                    .drop_duplicates(subset='id') if all_comments
+                    else pd.DataFrame(columns=COMMENT_COLS))
+
+    if new_submissions.empty:
         print("\nWARNING: No submissions were collected.")
         print("This usually means the Reddit API is not accessible from this network.")
         print("Reddit blocks requests from datacenter/CI IP ranges.")
         print("To collect real data, run with Tor: TOR_PROXY=socks5h://127.0.0.1:9050 python3 collect_reddit_data.py")
         return
 
+    # --- Cross-run deduplication: merge with any previously saved CSV ---
+    def _load_existing(path, cols):
+        """Load an existing CSV, returning an empty DataFrame if absent/empty."""
+        try:
+            df = pd.read_csv(path)
+            if df.empty or 'id' not in df.columns:
+                return pd.DataFrame(columns=cols)
+            return df
+        except (FileNotFoundError, pd.errors.EmptyDataError):
+            return pd.DataFrame(columns=cols)
+
+    existing_submissions = _load_existing('reddit_submissions.csv', SUBMISSION_COLS)
+    existing_comments = _load_existing('reddit_comments.csv', COMMENT_COLS)
+
+    submissions_df = (pd.concat([existing_submissions, new_submissions], ignore_index=True)
+                      .drop_duplicates(subset='id'))
+    comments_df = (pd.concat([existing_comments, new_comments], ignore_index=True)
+                   .drop_duplicates(subset='id'))
+
     submissions_df.to_csv('reddit_submissions.csv', index=False)
     comments_df.to_csv('reddit_comments.csv', index=False)
+
+    new_sub_count = len(new_submissions)
+    new_com_count = len(new_comments)
 
     print("\n" + "="*60)
     print("DONE")
     print("="*60)
-    print(f"Total submissions : {len(submissions_df)}")
-    print(f"Total comments    : {len(comments_df)}")
-    print(f"Date range (posts): {submissions_df['created_date'].min()} → {submissions_df['created_date'].max()}")
+    print(f"New submissions this run : {new_sub_count}")
+    print(f"New comments this run    : {new_com_count}")
+    print(f"Total submissions (all)  : {len(submissions_df)}")
+    print(f"Total comments (all)     : {len(comments_df)}")
+    print(f"Date range (posts)       : {submissions_df['created_date'].min()} → {submissions_df['created_date'].max()}")
     print(f"\nFiles written: reddit_submissions.csv  reddit_comments.csv")
 
     print("\nSubmissions by subreddit:")

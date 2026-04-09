@@ -29,7 +29,7 @@ dataset over time.
 | Metric | Value |
 |---|---|
 | Total posts | **1,593** |
-| Unique redditors (posts) | **1,345** |
+| Unique redditors (posts) | **1,345** (counted by hashed author ID) |
 | Autism-community posts | 800 (r/autism, r/aspergers, r/aspergirls, r/AutisticAdults) |
 | ADHD-community posts | 793 (r/ADHD, r/ADHDmemes, r/adhdwomen, r/adhd_anxiety) |
 | Date range | 2015-03-29 → 2026-04-09 |
@@ -97,10 +97,19 @@ The script paginates through the `new` and `top` listings for each subreddit and
 top-level comments for each post.  A GitHub Actions workflow runs the collection automatically
 every Sunday so the dataset stays up-to-date.
 
+Author usernames are **SHA-256 hashed** (16-char prefix, stored as `author_hash`) so that
+no raw Reddit usernames are committed to the repository; uniqueness is preserved for counting
+contributors.
+
 The data collection targets:
-- Posts (submissions) from the specified subreddits
-- Comments on those posts
-- Historical data going back to 2010 (or as far as available)
+- Recent posts (submissions) via Reddit's `new` listing (~100–1000 per subreddit)
+- Additional high-ranking posts surfaced by Reddit's `top?t=all` listing (often older)
+- Top-level comments on the collected posts
+
+This provides a broad sample of recent and historically notable discussions.
+Note that the `new` and `top` listings are each capped at ~1000 items by Reddit, so
+this does not guarantee complete historical coverage — the dataset grows incrementally
+with each weekly run.
 
 ### Sentiment Analysis
 
