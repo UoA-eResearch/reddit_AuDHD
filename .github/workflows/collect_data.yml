@@ -1,0 +1,71 @@
+name: Collect Reddit Data
+
+# Run weekly (Sunday at 00:00 UTC) and allow manual triggers.
+#
+# NOTE: Reddit's CDN blocks requests originating from GitHub-hosted runners
+# (datacenter IP ranges).  If the collection step reports 0 submissions, you
+# can work around this by either:
+#   1. Using a self-hosted runner on a residential or non-blocked network, or
+#   2. Authenticating via Reddit OAuth (add REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET
+#      secrets and update collect_reddit_data.py to use the OAuth endpoint).
+on:
+  schedule:
+    - cron: '0 0 * * 0'   # Every Sunday at midnight UTC
+  workflow_dispatch:        # Allow manual runs from the Actions tab
+
+permissions:
+  contents: write           # Required to commit data back to the repo
+
+jobs:
+  collect-and-analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Collect Reddit data
+        run: python collect_reddit_data.py
+
+      # Only proceed with analysis if the collection produced real rows.
+      - name: Check if data was collected
+        id: check_data
+        run: |
+          if [ -s reddit_submissions.csv ] && [ "$(wc -l < reddit_submissions.csv)" -gt 1 ]; then
+            echo "data_collected=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "data_collected=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No submissions collected – Reddit may be blocking this runner's IP."
+            echo "Consider using a self-hosted runner or Reddit OAuth credentials."
+          fi
+
+      - name: Run sentiment analysis
+        if: steps.check_data.outputs.data_collected == 'true'
+        run: python analyze_sentiment.py
+
+      - name: Commit and push updated data
+        if: steps.check_data.outputs.data_collected == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add \
+            reddit_submissions.csv \
+            reddit_comments.csv \
+            reddit_submissions_with_sentiment.csv \
+            reddit_comments_with_sentiment.csv \
+            sentiment_analysis_overview.png \
+            sentiment_by_category.png \
+            sentiment_by_subreddit.png
+          # Only commit when there are actual changes.
+          git diff --staged --quiet \
+            || git commit -m "chore: update Reddit data and sentiment analysis [$(date -u '+%Y-%m-%d')]"
+          git push
