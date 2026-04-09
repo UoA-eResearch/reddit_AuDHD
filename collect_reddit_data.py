@@ -11,24 +11,33 @@ all-time 'top' posts to capture as much historical content as possible.
 For each submission we fetch its comments via:
   https://www.reddit.com/r/{subreddit}/comments/{id}.json
 
-Tor routing
------------
-When the TOR_PROXY environment variable is set (or when a Tor SOCKS5 daemon
-is detected on 127.0.0.1:9050), all requests are routed through Tor so that
-Reddit's datacenter-IP blocks are bypassed.  The GHA workflow sets this
-automatically via the "torsocks" wrapper; you can also run:
+Tor routing & exit-node rotation
+---------------------------------
+When a Tor SOCKS5 daemon is running on 127.0.0.1:9050 (or the TOR_PROXY env
+var is set), all requests are routed through Tor so that Reddit's datacenter-IP
+blocks are bypassed.
 
-    torsocks python collect_reddit_data.py
-    # or
-    TOR_PROXY=socks5h://127.0.0.1:9050 python collect_reddit_data.py
+If Reddit returns 429 (rate-limited) or 403 (blocked) while using Tor, the
+script automatically restarts the Tor daemon to obtain a fresh exit node and
+retries the request.  This is transparent to callers.
+
+Run with Tor (explicit proxy):
+    TOR_PROXY=socks5h://127.0.0.1:9050 python3 collect_reddit_data.py
+Run with torsocks wrapper:
+    torsocks python3 collect_reddit_data.py
+Seed-only run (1 page per subreddit, no comments – quick proof-of-concept):
+    python3 collect_reddit_data.py --seed
 """
 
+import argparse
 import os
 import socket
-import requests
-import pandas as pd
+import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+
+import pandas as pd
+import requests
 from tqdm import tqdm
 
 # Subreddits focused on Autism and ADHD
@@ -47,6 +56,8 @@ LIMIT = 100
 REQUEST_DELAY = 2.0
 # Maximum comments to fetch per post (top-level only)
 MAX_COMMENTS_PER_POST = 50
+# Maximum attempts to rotate the Tor exit node before giving up on a request
+MAX_ROTATION_ATTEMPTS = 10
 
 
 def _detect_tor_proxy():
@@ -56,15 +67,15 @@ def _detect_tor_proxy():
 
     Detection order:
       1. TOR_PROXY env var (e.g. ``socks5h://127.0.0.1:9050``)
-      2. A reachable TCP socket on 127.0.0.1:9050 (default Tor daemon port)
-      3. torsocks transparent-proxy mode (LD_PRELOAD is set by torsocks)
+      2. torsocks transparent-proxy mode (LD_PRELOAD set by torsocks)
+      3. A reachable TCP socket on 127.0.0.1:9050 (default Tor daemon port)
     """
     env_proxy = os.environ.get('TOR_PROXY', '').strip()
     if env_proxy:
         return {'http': env_proxy, 'https': env_proxy}
 
-    # Detect torsocks LD_PRELOAD wrapping – in that mode Python's socket calls
-    # are transparently redirected, so we don't need an explicit proxy dict.
+    # Detect torsocks LD_PRELOAD wrapping – socket calls are transparently
+    # redirected so we don't need an explicit proxy dict.
     if 'torsocks' in os.environ.get('LD_PRELOAD', '').lower():
         return {}  # empty dict → use default (torsocks handles it)
 
@@ -80,34 +91,87 @@ def _detect_tor_proxy():
     return None
 
 
-# Determine proxies once at import time
+# Determine proxies once at startup
 _PROXIES = _detect_tor_proxy()
 if _PROXIES is not None:
-    print(f"[tor] Routing requests through Tor SOCKS5 proxy (proxies={_PROXIES or 'torsocks LD_PRELOAD'})")
+    proxy_desc = _PROXIES or 'torsocks LD_PRELOAD (transparent)'
+    print(f"[tor] Routing requests through Tor ({proxy_desc})")
 else:
     print("[info] No Tor proxy detected – using direct connection")
 
 
-def reddit_get(url, params=None, retries=3):
-    """Make a GET request to the Reddit JSON API with retry logic."""
+def rotate_tor_exit(max_wait: int = 120) -> bool:
+    """
+    Restart the Tor daemon to obtain a fresh exit node.
+
+    Returns True if Tor bootstrapped successfully within *max_wait* seconds,
+    False otherwise.  Safe to call even when Tor is not installed (returns
+    False immediately).
+    """
+    try:
+        subprocess.run(['sudo', 'systemctl', 'restart', 'tor@default'],
+                       capture_output=True, timeout=30)
+    except (FileNotFoundError, subprocess.TimeoutExpired, PermissionError):
+        return False
+
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        time.sleep(3)
+        try:
+            result = subprocess.run(
+                ['sudo', 'journalctl', '-u', 'tor@default',
+                 '--no-pager', '-n', '30', '-r'],
+                capture_output=True, text=True, timeout=10
+            )
+            if 'Bootstrapped 100%' in result.stdout:
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
+    return False
+
+
+def reddit_get(url, params=None):
+    """
+    Make a GET request to the Reddit JSON API.
+
+    When Tor is active and Reddit returns 429 or 403, the exit node is rotated
+    automatically and the request is retried (up to MAX_ROTATION_ATTEMPTS).
+    For non-Tor connections a simple exponential back-off is used instead.
+    """
     kwargs = dict(headers=HEADERS, params=params, timeout=30)
     if _PROXIES is not None:
         kwargs['proxies'] = _PROXIES
-    for attempt in range(retries):
+
+    for attempt in range(MAX_ROTATION_ATTEMPTS):
         try:
             response = requests.get(url, **kwargs)
             if response.status_code == 200:
                 return response.json()
-            elif response.status_code == 429:
-                wait = 60 * (attempt + 1)
-                print(f"  Rate limited – waiting {wait}s …")
-                time.sleep(wait)
+
+            if response.status_code in (429, 403):
+                if _PROXIES is not None:
+                    # Tor is active – rotate exit node and retry immediately
+                    print(f"  [tor] HTTP {response.status_code} – rotating exit node "
+                          f"(attempt {attempt + 1}/{MAX_ROTATION_ATTEMPTS}) …")
+                    if rotate_tor_exit():
+                        print("  [tor] New exit node ready, retrying …")
+                    else:
+                        print("  [tor] Rotation failed, waiting 10 s …")
+                        time.sleep(10)
+                else:
+                    wait = 60 * (attempt + 1)
+                    print(f"  Rate limited – waiting {wait}s …")
+                    time.sleep(wait)
             else:
                 print(f"  HTTP {response.status_code} for {url}")
                 return None
+
         except Exception as exc:
             print(f"  Request error ({exc}), retrying …")
             time.sleep(5)
+
+    print(f"  Gave up after {MAX_ROTATION_ATTEMPTS} attempts for {url}")
     return None
 
 
@@ -133,11 +197,16 @@ def fetch_listing(subreddit, listing='new', time_filter='all', after=None):
     return [], None
 
 
-def collect_submissions(subreddit):
+def collect_submissions(subreddit, max_pages=10):
     """
     Collect posts from a subreddit by paginating through:
       - 'new' listing  (gets the most recent ~1000 posts)
       - 'top?t=all'    (gets the highest-voted all-time posts – often older)
+
+    Parameters
+    ----------
+    max_pages : maximum pages to fetch per listing (default 10 = ~1000 posts).
+                Pass 1 for a quick seed run (~100 posts per listing).
 
     Returns a list of raw post dicts.
     """
@@ -158,7 +227,7 @@ def collect_submissions(subreddit):
                 posts[post['id']] = post
             page += 1
             time.sleep(REQUEST_DELAY)
-            if not after or page >= 10:   # Reddit caps at ~1000 results (10 pages)
+            if not after or page >= max_pages:
                 break
 
     return list(posts.values())
@@ -181,6 +250,14 @@ def fetch_post_comments(subreddit, post_id):
     return comments
 
 
+def _utc_date(ts):
+    """Convert a UTC Unix timestamp to a YYYY-MM-DD string."""
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%d')
+    except (OSError, OverflowError, ValueError):
+        return ''
+
+
 def extract_submission_features(post):
     """Return a flat dict of relevant submission fields."""
     created = post.get('created_utc', 0)
@@ -194,7 +271,7 @@ def extract_submission_features(post):
         'upvote_ratio': post.get('upvote_ratio', None),
         'num_comments': post.get('num_comments', 0),
         'created_utc': created,
-        'created_date': datetime.utcfromtimestamp(created).strftime('%Y-%m-%d'),
+        'created_date': _utc_date(created),
         'url': post.get('url', ''),
         'is_self': post.get('is_self', False),
         'permalink': post.get('permalink', ''),
@@ -211,13 +288,27 @@ def extract_comment_features(comment, subreddit):
         'author': comment.get('author'),
         'score': comment.get('score', 0),
         'created_utc': created,
-        'created_date': datetime.utcfromtimestamp(created).strftime('%Y-%m-%d'),
+        'created_date': _utc_date(created),
         'parent_id': comment.get('parent_id', ''),
         'link_id': comment.get('link_id', ''),
     }
 
 
 def main():
+    parser = argparse.ArgumentParser(description='Collect Reddit AuDHD data')
+    parser.add_argument(
+        '--seed', action='store_true',
+        help='Seed mode: fetch only 1 page per listing and skip comments. '
+             'Useful for a quick proof-of-concept run.'
+    )
+    args = parser.parse_args()
+
+    if args.seed:
+        print("=== SEED MODE: 1 page per listing, no comments ===")
+        max_pages = 1
+    else:
+        max_pages = 10  # Reddit caps at ~1000 posts (10 × 100)
+
     print("Reddit data collection – official JSON API")
     print(f"Target subreddits: {', '.join(ALL_SUBREDDITS)}")
     print()
@@ -231,10 +322,13 @@ def main():
         print('='*60)
 
         # --- Submissions ---
-        posts = collect_submissions(subreddit)
+        posts = collect_submissions(subreddit, max_pages=max_pages)
         print(f"  → {len(posts)} unique posts collected")
         sub_rows = [extract_submission_features(p) for p in posts]
         all_submissions.extend(sub_rows)
+
+        if args.seed:
+            continue  # skip comment fetching in seed mode
 
         # --- Comments (fetch per post) ---
         print(f"  Fetching comments for {len(posts)} posts …")
@@ -254,7 +348,7 @@ def main():
         print("\nWARNING: No submissions were collected.")
         print("This usually means the Reddit API is not accessible from this network.")
         print("Reddit blocks requests from datacenter/CI IP ranges.")
-        print("To collect real data, run this script from a personal machine or use OAuth.")
+        print("To collect real data, run with Tor: TOR_PROXY=socks5h://127.0.0.1:9050 python3 collect_reddit_data.py")
         return
 
     submissions_df.to_csv('reddit_submissions.csv', index=False)
@@ -270,8 +364,9 @@ def main():
 
     print("\nSubmissions by subreddit:")
     print(submissions_df['subreddit'].value_counts().to_string())
-    print("\nComments by subreddit:")
-    print(comments_df['subreddit'].value_counts().to_string())
+    if not comments_df.empty:
+        print("\nComments by subreddit:")
+        print(comments_df['subreddit'].value_counts().to_string())
 
 
 if __name__ == "__main__":

@@ -44,7 +44,14 @@ def load_and_analyze_data():
     """
     print("Loading data...")
     submissions_df = pd.read_csv('reddit_submissions.csv')
-    comments_df = pd.read_csv('reddit_comments.csv')
+
+    # Comments CSV may be empty (e.g. after a seed-only run)
+    try:
+        comments_df = pd.read_csv('reddit_comments.csv')
+    except (pd.errors.EmptyDataError, FileNotFoundError):
+        comments_df = pd.DataFrame(columns=['id', 'subreddit', 'body', 'author',
+                                             'score', 'created_utc', 'created_date',
+                                             'parent_id', 'link_id'])
 
     # Analyze sentiment for submissions
     print("\nAnalyzing sentiment for submissions...")
@@ -96,9 +103,12 @@ def create_visualizations(submissions_df, comments_df):
     axes[0, 0].set_title('Submission Sentiment Distribution')
 
     # 2. Sentiment distribution for comments
-    comment_sentiment_counts = comments_df['sentiment_category'].value_counts()
-    axes[0, 1].pie(comment_sentiment_counts.values, labels=comment_sentiment_counts.index, autopct='%1.1f%%',
-                   colors=['#ff9999', '#66b3ff', '#99ff99'])
+    if not comments_df.empty and 'sentiment_category' in comments_df.columns:
+        comment_sentiment_counts = comments_df['sentiment_category'].value_counts()
+        axes[0, 1].pie(comment_sentiment_counts.values, labels=comment_sentiment_counts.index, autopct='%1.1f%%',
+                       colors=['#ff9999', '#66b3ff', '#99ff99'])
+    else:
+        axes[0, 1].text(0.5, 0.5, 'No comments collected yet', ha='center', va='center', transform=axes[0, 1].transAxes)
     axes[0, 1].set_title('Comment Sentiment Distribution')
 
     # 3. Sentiment over time (monthly average) for submissions
@@ -112,8 +122,11 @@ def create_visualizations(submissions_df, comments_df):
     axes[1, 0].grid(True, alpha=0.3)
 
     # 4. Sentiment over time (monthly average) for comments
-    comments_monthly = comments_df.groupby(pd.Grouper(key='created_date', freq='ME'))['sentiment_score'].mean()
-    axes[1, 1].plot(comments_monthly.index, comments_monthly.values, marker='o', linewidth=2, color='orange')
+    if not comments_df.empty and 'sentiment_score' in comments_df.columns:
+        comments_monthly = comments_df.groupby(pd.Grouper(key='created_date', freq='ME'))['sentiment_score'].mean()
+        axes[1, 1].plot(comments_monthly.index, comments_monthly.values, marker='o', linewidth=2, color='orange')
+    else:
+        axes[1, 1].text(0.5, 0.5, 'No comments collected yet', ha='center', va='center', transform=axes[1, 1].transAxes)
     axes[1, 1].set_title('Average Comment Sentiment Over Time')
     axes[1, 1].set_xlabel('Date')
     axes[1, 1].set_ylabel('Average Sentiment Score')
@@ -130,8 +143,11 @@ def create_visualizations(submissions_df, comments_df):
     axes[2, 0].grid(True, alpha=0.3, axis='y')
 
     # 6. Sentiment by category (Autism vs ADHD) - Comments
-    category_sentiment_com = comments_df.groupby('category')['sentiment_score'].mean()
-    axes[2, 1].bar(category_sentiment_com.index, category_sentiment_com.values, color=['#8B4789', '#4A90E2'])
+    if not comments_df.empty and 'category' in comments_df.columns and 'sentiment_score' in comments_df.columns:
+        category_sentiment_com = comments_df.groupby('category')['sentiment_score'].mean()
+        axes[2, 1].bar(category_sentiment_com.index, category_sentiment_com.values, color=['#8B4789', '#4A90E2'])
+    else:
+        axes[2, 1].text(0.5, 0.5, 'No comments collected yet', ha='center', va='center', transform=axes[2, 1].transAxes)
     axes[2, 1].set_title('Average Comment Sentiment by Category')
     axes[2, 1].set_ylabel('Average Sentiment Score')
     axes[2, 1].axhline(y=0, color='r', linestyle='--', alpha=0.5)
@@ -161,10 +177,13 @@ def create_visualizations(submissions_df, comments_df):
     axes[0].grid(True, alpha=0.3)
 
     # Comments by category
-    for category in ['Autism', 'ADHD']:
-        data = comments_df[comments_df['category'] == category]
-        monthly = data.groupby(pd.Grouper(key='created_date', freq='ME'))['sentiment_score'].mean()
-        axes[1].plot(monthly.index, monthly.values, marker='o', linewidth=2, label=category)
+    if not comments_df.empty and 'category' in comments_df.columns:
+        for category in ['Autism', 'ADHD']:
+            data = comments_df[comments_df['category'] == category]
+            monthly = data.groupby(pd.Grouper(key='created_date', freq='ME'))['sentiment_score'].mean()
+            axes[1].plot(monthly.index, monthly.values, marker='o', linewidth=2, label=category)
+    else:
+        axes[1].text(0.5, 0.5, 'No comments collected yet', ha='center', va='center', transform=axes[1].transAxes)
 
     axes[1].set_title('Comment Sentiment Over Time')
     axes[1].set_xlabel('Date')
@@ -192,8 +211,11 @@ def create_visualizations(submissions_df, comments_df):
     axes[0].grid(True, alpha=0.3, axis='x')
 
     # Comments
-    com_by_subreddit = comments_df.groupby('subreddit')['sentiment_score'].mean().sort_values()
-    axes[1].barh(com_by_subreddit.index, com_by_subreddit.values, color='coral')
+    if not comments_df.empty and 'sentiment_score' in comments_df.columns:
+        com_by_subreddit = comments_df.groupby('subreddit')['sentiment_score'].mean().sort_values()
+        axes[1].barh(com_by_subreddit.index, com_by_subreddit.values, color='coral')
+    else:
+        axes[1].text(0.5, 0.5, 'No comments collected yet', ha='center', va='center', transform=axes[1].transAxes)
     axes[1].set_xlabel('Average Sentiment Score')
     axes[1].set_title('Comments')
     axes[1].axvline(x=0, color='r', linestyle='--', alpha=0.5)
@@ -225,19 +247,25 @@ def generate_statistics(submissions_df, comments_df):
     print("\n" + "-"*60)
     print("\nCOMMENTS:")
     print(f"Total comments analyzed: {len(comments_df)}")
-    print(f"Average sentiment score: {comments_df['sentiment_score'].mean():.4f}")
-    print(f"Median sentiment score: {comments_df['sentiment_score'].median():.4f}")
-    print(f"Standard deviation: {comments_df['sentiment_score'].std():.4f}")
-    print("\nSentiment distribution:")
-    print(comments_df['sentiment_category'].value_counts())
-    print("\nBy category:")
-    print(comments_df.groupby('category')['sentiment_score'].agg(['count', 'mean', 'std']))
+    if not comments_df.empty and 'sentiment_score' in comments_df.columns:
+        print(f"Average sentiment score: {comments_df['sentiment_score'].mean():.4f}")
+        print(f"Median sentiment score: {comments_df['sentiment_score'].median():.4f}")
+        print(f"Standard deviation: {comments_df['sentiment_score'].std():.4f}")
+        print("\nSentiment distribution:")
+        print(comments_df['sentiment_category'].value_counts())
+        print("\nBy category:")
+        print(comments_df.groupby('category')['sentiment_score'].agg(['count', 'mean', 'std']))
+    else:
+        print("(No comments collected in this run)")
 
     # Time range
     print("\n" + "-"*60)
     print("\nTIME RANGE:")
     print(f"Submissions: {submissions_df['created_date'].min()} to {submissions_df['created_date'].max()}")
-    print(f"Comments: {comments_df['created_date'].min()} to {comments_df['created_date'].max()}")
+    if not comments_df.empty and 'created_date' in comments_df.columns and comments_df['created_date'].notna().any():
+        print(f"Comments: {comments_df['created_date'].min()} to {comments_df['created_date'].max()}")
+    else:
+        print("Comments: N/A")
 
     # Most positive and negative submissions
     print("\n" + "-"*60)
@@ -269,11 +297,11 @@ def generate_statistics(submissions_df, comments_df):
         },
         'comments': {
             'total': len(comments_df),
-            'avg_sentiment': comments_df['sentiment_score'].mean(),
-            'median_sentiment': comments_df['sentiment_score'].median(),
-            'std_sentiment': comments_df['sentiment_score'].std(),
-            'sentiment_distribution': comments_df['sentiment_category'].value_counts().to_dict(),
-            'by_category': comments_df.groupby('category')['sentiment_score'].mean().to_dict()
+            'avg_sentiment': comments_df['sentiment_score'].mean() if not comments_df.empty else None,
+            'median_sentiment': comments_df['sentiment_score'].median() if not comments_df.empty else None,
+            'std_sentiment': comments_df['sentiment_score'].std() if not comments_df.empty else None,
+            'sentiment_distribution': comments_df['sentiment_category'].value_counts().to_dict() if not comments_df.empty else {},
+            'by_category': comments_df.groupby('category')['sentiment_score'].mean().to_dict() if not comments_df.empty else {}
         }
     }
 

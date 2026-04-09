@@ -18,11 +18,62 @@ This project analyzes sentiment patterns in discussions about Autism and ADHD on
 - r/adhdwomen
 - r/adhd_anxiety
 
-## Key Findings
+## Initial Results (Seed Collection — April 2026)
 
-Key findings will be populated once real Reddit data has been collected by running
-`collect_reddit_data.py` (or via the automated weekly GitHub Actions workflow) and
-`analyze_sentiment.py`.
+A seed dataset was collected on 2026-04-09 via Tor (with automatic exit-node rotation)
+across all 8 subreddits.  The weekly GitHub Actions workflow will continue to grow this
+dataset over time.
+
+### Dataset Size
+
+| Metric | Value |
+|---|---|
+| Total posts | **1,593** |
+| Unique redditors (posts) | **1,345** |
+| Autism-community posts | 800 (r/autism, r/aspergers, r/aspergirls, r/AutisticAdults) |
+| ADHD-community posts | 793 (r/ADHD, r/ADHDmemes, r/adhdwomen, r/adhd_anxiety) |
+| Date range | 2015-03-29 → 2026-04-09 |
+
+### Sentiment Overview (Posts)
+
+| Sentiment | Count | % |
+|---|---|---|
+| Positive (score ≥ 0.05) | 785 | 49.3% |
+| Negative (score ≤ −0.05) | 524 | 32.9% |
+| Neutral | 284 | 17.8% |
+
+Average compound score: **0.123** (mildly positive overall)
+
+### Sentiment by Community
+
+| Community | Avg. Sentiment |
+|---|---|
+| Autism | 0.139 |
+| ADHD | 0.107 |
+
+### Sentiment by Subreddit
+
+| Subreddit | Avg. Sentiment |
+|---|---|
+| r/adhdwomen | +0.243 (most positive) |
+| r/AutisticAdults | +0.156 |
+| r/aspergirls | +0.152 |
+| r/ADHD | +0.134 |
+| r/autism | +0.129 |
+| r/aspergers | +0.119 |
+| r/ADHDmemes | +0.064 |
+| r/adhd_anxiety | −0.015 (only subreddit with net-negative avg.) |
+
+### Notable Examples
+
+**Most positive post:** *"I went through 700 reddit comments and collected 131 ADHD pro-tips!"*
+(r/ADHD, sentiment 0.9998)
+
+**Most negative post:** *"anxiety, depression, IBS, ADHD, but no proper relief from pills?"*
+(r/adhd_anxiety, sentiment −0.9997)
+
+> **Note:** These results are from a seed collection of 100 posts per subreddit per listing.
+> The dataset will grow automatically each week via the GitHub Actions cron workflow.
 
 ## Visualizations
 
@@ -99,7 +150,11 @@ pip install -r requirements.txt
 ### Collect Reddit Data
 
 ```bash
+# Full collection (~1000 posts per subreddit + comments)
 python3 collect_reddit_data.py
+
+# Seed collection: 1 page per subreddit (~100–200 posts each), no comments
+python3 collect_reddit_data.py --seed
 ```
 
 This fetches posts and comments from the target subreddits via the official Reddit JSON API
@@ -107,11 +162,19 @@ and writes:
 - `reddit_submissions.csv`
 - `reddit_comments.csv`
 
-> **Note**: Reddit blocks requests from datacenter IPs (including GitHub-hosted runners).
-> The automated GitHub Actions workflow routes all traffic through **Tor** (via `torsocks`)
-> to bypass this.  To run locally without Tor, use a residential or non-blocked network.
-> To run locally with Tor, install `tor` and `torsocks`, start the Tor service, then:
-> `torsocks python3 collect_reddit_data.py`
+> **Tor routing**: Reddit blocks datacenter IPs (including GitHub-hosted runners). The script
+> automatically detects and uses a local Tor SOCKS5 proxy (`127.0.0.1:9050`) or a `TOR_PROXY`
+> environment variable.  If Reddit returns 429 or 403, the script **automatically rotates the
+> Tor exit node** (restarts the Tor daemon) and retries, so collection continues uninterrupted.
+>
+> To use Tor locally:
+> ```bash
+> sudo apt-get install -y tor torsocks
+> sudo systemctl start tor
+> TOR_PROXY=socks5h://127.0.0.1:9050 python3 collect_reddit_data.py --seed
+> # or
+> torsocks python3 collect_reddit_data.py
+> ```
 
 ### Run Sentiment Analysis
 
