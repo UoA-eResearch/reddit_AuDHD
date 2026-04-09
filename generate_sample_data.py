@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Script to generate sample Reddit data for demonstration purposes.
-Since the Pushshift API is currently restricted, this creates realistic sample data.
+Fallback script to generate sample Reddit data for demonstration purposes.
+Used when the official Reddit JSON API is not accessible (e.g. from CI/datacenter
+IP ranges that Reddit blocks).  Run collect_reddit_data.py on a personal machine
+or from a network not blocked by Reddit to obtain real data.
 """
 
 import pandas as pd
@@ -155,7 +157,8 @@ def main():
     print(comments_df['subreddit'].value_counts())
 
     print("\nNote: This is sample data generated for demonstration purposes.")
-    print("The Pushshift API is currently restricted and unavailable for public use.")
+    print("Run collect_reddit_data.py from a non-datacenter network to collect real data")
+    print("via the official Reddit JSON API (https://www.reddit.com/r/{sub}/new.json).")
 
 if __name__ == "__main__":
     main()

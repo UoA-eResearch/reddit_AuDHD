@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """
-Script to collect Reddit posts and comments about Autism and ADHD using the Pushshift API.
+Script to collect Reddit posts and comments about Autism and ADHD using the
+official Reddit JSON API (no authentication required).
+
+The Reddit API exposes public JSON endpoints at:
+  https://www.reddit.com/r/{subreddit}/{listing}.json
+
+We paginate through the 'new' listing (most recent → oldest) and also pull
+all-time 'top' posts to capture as much historical content as possible.
+For each submission we fetch its comments via:
+  https://www.reddit.com/r/{subreddit}/comments/{id}.json
 """
 
 import requests
 import pandas as pd
 import time
-import json
 from datetime import datetime
 from tqdm import tqdm
 
@@ -15,195 +23,201 @@ AUTISM_SUBREDDITS = ['autism', 'aspergers', 'aspergirls', 'AutisticAdults']
 ADHD_SUBREDDITS = ['ADHD', 'ADHDmemes', 'adhdwomen', 'adhd_anxiety']
 ALL_SUBREDDITS = AUTISM_SUBREDDITS + ADHD_SUBREDDITS
 
-# Pushshift API endpoints
-PUSHSHIFT_SUBMISSION_URL = "https://api.pushshift.io/reddit/search/submission/"
-PUSHSHIFT_COMMENT_URL = "https://api.pushshift.io/reddit/search/comment/"
+# Reddit requires a descriptive User-Agent string for API access
+HEADERS = {
+    'User-Agent': 'python:reddit_audhd_research:v2.0 (academic research on neurodivergent communities)'
+}
 
-# Start from 2010 (Reddit's early days, pushshift data availability)
-START_TIMESTAMP = int(datetime(2010, 1, 1).timestamp())
-END_TIMESTAMP = int(datetime.now().timestamp())
+# Reddit caps listings at 100 items per request and ~1000 items total per listing
+LIMIT = 100
+# Delay between requests to stay well within Reddit's rate limit (~30 req/min)
+REQUEST_DELAY = 2.0
+# Maximum comments to fetch per post (top-level only)
+MAX_COMMENTS_PER_POST = 50
 
-def fetch_submissions(subreddit, start_time, end_time, limit=100):
+
+def reddit_get(url, params=None, retries=3):
+    """Make a GET request to the Reddit JSON API with retry logic."""
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, headers=HEADERS, params=params, timeout=30)
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 429:
+                wait = 60 * (attempt + 1)
+                print(f"  Rate limited – waiting {wait}s …")
+                time.sleep(wait)
+            else:
+                print(f"  HTTP {response.status_code} for {url}")
+                return None
+        except Exception as exc:
+            print(f"  Request error ({exc}), retrying …")
+            time.sleep(5)
+    return None
+
+
+def fetch_listing(subreddit, listing='new', time_filter='all', after=None):
     """
-    Fetch submissions from a subreddit within a time range.
+    Fetch one page (up to LIMIT items) from a subreddit listing.
+
+    Parameters
+    ----------
+    listing     : 'new' | 'top' | 'hot' | 'rising'
+    time_filter : 'all' | 'year' | 'month' | 'week' | 'day'  (only for 'top')
+    after       : fullname (e.g. 't3_abc123') for pagination cursor
     """
-    params = {
-        'subreddit': subreddit,
-        'after': start_time,
-        'before': end_time,
-        'size': limit,
-        'sort': 'created_utc',
-        'sort_type': 'asc'
-    }
+    url = f"https://www.reddit.com/r/{subreddit}/{listing}.json"
+    params = {'limit': LIMIT, 'raw_json': 1}
+    if listing == 'top':
+        params['t'] = time_filter
+    if after:
+        params['after'] = after
+    data = reddit_get(url, params=params)
+    if data and 'data' in data:
+        return data['data'].get('children', []), data['data'].get('after')
+    return [], None
 
-    try:
-        response = requests.get(PUSHSHIFT_SUBMISSION_URL, params=params, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            return data.get('data', [])
-        else:
-            print(f"Error {response.status_code} fetching submissions from r/{subreddit}")
-            return []
-    except Exception as e:
-        print(f"Exception fetching submissions: {e}")
-        return []
 
-def fetch_comments(subreddit, start_time, end_time, limit=100):
+def collect_submissions(subreddit):
     """
-    Fetch comments from a subreddit within a time range.
+    Collect posts from a subreddit by paginating through:
+      - 'new' listing  (gets the most recent ~1000 posts)
+      - 'top?t=all'    (gets the highest-voted all-time posts – often older)
+
+    Returns a list of raw post dicts.
     """
-    params = {
-        'subreddit': subreddit,
-        'after': start_time,
-        'before': end_time,
-        'size': limit,
-        'sort': 'created_utc',
-        'sort_type': 'asc'
-    }
+    posts = {}
 
-    try:
-        response = requests.get(PUSHSHIFT_COMMENT_URL, params=params, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            return data.get('data', [])
-        else:
-            print(f"Error {response.status_code} fetching comments from r/{subreddit}")
-            return []
-    except Exception as e:
-        print(f"Exception fetching comments: {e}")
-        return []
-
-def collect_data_for_subreddit(subreddit, start_time, end_time, data_type='submissions'):
-    """
-    Collect all data for a subreddit by paginating through time windows.
-    """
-    all_data = []
-    current_time = start_time
-    batch_size = 500  # Maximum allowed by Pushshift
-
-    print(f"\nCollecting {data_type} from r/{subreddit}...")
-
-    fetch_function = fetch_submissions if data_type == 'submissions' else fetch_comments
-
-    with tqdm(total=end_time - start_time, desc=f"r/{subreddit}") as pbar:
-        while current_time < end_time:
-            batch = fetch_function(subreddit, current_time, end_time, limit=batch_size)
-
-            if not batch:
-                # If no data returned, jump forward in time
-                current_time += 86400 * 30  # 30 days
-                pbar.update(86400 * 30)
-                time.sleep(0.5)  # Rate limiting
-                continue
-
-            all_data.extend(batch)
-
-            # Update current_time to the timestamp of the last item
-            last_timestamp = batch[-1].get('created_utc', current_time)
-            time_jump = last_timestamp - current_time + 1
-            current_time = last_timestamp + 1
-            pbar.update(time_jump)
-
-            # Rate limiting - be nice to the API
-            time.sleep(0.5)
-
-            # Stop if we got fewer items than requested (reached the end)
-            if len(batch) < batch_size:
+    for listing, tf in [('new', None), ('top', 'all')]:
+        after = None
+        page = 0
+        label = f"r/{subreddit}/{listing}"
+        print(f"  Fetching {label} …")
+        while True:
+            children, after = fetch_listing(subreddit, listing=listing,
+                                            time_filter=tf or 'all', after=after)
+            if not children:
+                break
+            for child in children:
+                post = child.get('data', {})
+                posts[post['id']] = post
+            page += 1
+            time.sleep(REQUEST_DELAY)
+            if not after or page >= 10:   # Reddit caps at ~1000 results (10 pages)
                 break
 
-    print(f"Collected {len(all_data)} {data_type} from r/{subreddit}")
-    return all_data
+    return list(posts.values())
 
-def extract_submission_features(submissions):
-    """
-    Extract relevant features from submissions.
-    """
-    extracted = []
-    for sub in submissions:
-        extracted.append({
-            'id': sub.get('id'),
-            'subreddit': sub.get('subreddit'),
-            'title': sub.get('title', ''),
-            'selftext': sub.get('selftext', ''),
-            'author': sub.get('author'),
-            'score': sub.get('score', 0),
-            'num_comments': sub.get('num_comments', 0),
-            'created_utc': sub.get('created_utc'),
-            'created_date': datetime.fromtimestamp(sub.get('created_utc', 0)).strftime('%Y-%m-%d'),
-            'url': sub.get('url', ''),
-            'is_self': sub.get('is_self', False)
-        })
-    return extracted
 
-def extract_comment_features(comments):
+def fetch_post_comments(subreddit, post_id):
     """
-    Extract relevant features from comments.
+    Fetch top-level comments for a single post.
+    Returns a flat list of comment dicts.
     """
-    extracted = []
-    for comment in comments:
-        extracted.append({
-            'id': comment.get('id'),
-            'subreddit': comment.get('subreddit'),
-            'body': comment.get('body', ''),
-            'author': comment.get('author'),
-            'score': comment.get('score', 0),
-            'created_utc': comment.get('created_utc'),
-            'created_date': datetime.fromtimestamp(comment.get('created_utc', 0)).strftime('%Y-%m-%d'),
-            'parent_id': comment.get('parent_id', ''),
-            'link_id': comment.get('link_id', '')
-        })
-    return extracted
+    url = f"https://www.reddit.com/r/{subreddit}/comments/{post_id}.json"
+    data = reddit_get(url, params={'limit': MAX_COMMENTS_PER_POST, 'depth': 1, 'raw_json': 1})
+    if not data or len(data) < 2:
+        return []
+
+    comments = []
+    for child in data[1]['data'].get('children', []):
+        if child.get('kind') == 't1':
+            comments.append(child['data'])
+    return comments
+
+
+def extract_submission_features(post):
+    """Return a flat dict of relevant submission fields."""
+    created = post.get('created_utc', 0)
+    return {
+        'id': post.get('id'),
+        'subreddit': post.get('subreddit'),
+        'title': post.get('title', ''),
+        'selftext': post.get('selftext', ''),
+        'author': post.get('author'),
+        'score': post.get('score', 0),
+        'upvote_ratio': post.get('upvote_ratio', None),
+        'num_comments': post.get('num_comments', 0),
+        'created_utc': created,
+        'created_date': datetime.utcfromtimestamp(created).strftime('%Y-%m-%d'),
+        'url': post.get('url', ''),
+        'is_self': post.get('is_self', False),
+        'permalink': post.get('permalink', ''),
+    }
+
+
+def extract_comment_features(comment, subreddit):
+    """Return a flat dict of relevant comment fields."""
+    created = comment.get('created_utc', 0)
+    return {
+        'id': comment.get('id'),
+        'subreddit': subreddit,
+        'body': comment.get('body', ''),
+        'author': comment.get('author'),
+        'score': comment.get('score', 0),
+        'created_utc': created,
+        'created_date': datetime.utcfromtimestamp(created).strftime('%Y-%m-%d'),
+        'parent_id': comment.get('parent_id', ''),
+        'link_id': comment.get('link_id', ''),
+    }
+
 
 def main():
-    """
-    Main function to orchestrate data collection.
-    """
-    print("Starting Reddit data collection for Autism and ADHD subreddits")
+    print("Reddit data collection – official JSON API")
     print(f"Target subreddits: {', '.join(ALL_SUBREDDITS)}")
-    print(f"Time range: {datetime.fromtimestamp(START_TIMESTAMP)} to {datetime.fromtimestamp(END_TIMESTAMP)}")
+    print()
 
     all_submissions = []
     all_comments = []
 
-    # Collect submissions from all subreddits
-    print("\n" + "="*60)
-    print("COLLECTING SUBMISSIONS")
-    print("="*60)
     for subreddit in ALL_SUBREDDITS:
-        submissions = collect_data_for_subreddit(subreddit, START_TIMESTAMP, END_TIMESTAMP, 'submissions')
-        all_submissions.extend(extract_submission_features(submissions))
+        print(f"\n{'='*60}")
+        print(f"Subreddit: r/{subreddit}")
+        print('='*60)
 
-    # Collect comments from all subreddits
-    print("\n" + "="*60)
-    print("COLLECTING COMMENTS")
-    print("="*60)
-    for subreddit in ALL_SUBREDDITS:
-        comments = collect_data_for_subreddit(subreddit, START_TIMESTAMP, END_TIMESTAMP, 'comments')
-        all_comments.extend(extract_comment_features(comments))
+        # --- Submissions ---
+        posts = collect_submissions(subreddit)
+        print(f"  → {len(posts)} unique posts collected")
+        sub_rows = [extract_submission_features(p) for p in posts]
+        all_submissions.extend(sub_rows)
 
-    # Convert to DataFrames
-    submissions_df = pd.DataFrame(all_submissions)
-    comments_df = pd.DataFrame(all_comments)
+        # --- Comments (fetch per post) ---
+        print(f"  Fetching comments for {len(posts)} posts …")
+        for post in tqdm(posts, desc=f"  r/{subreddit} comments"):
+            comments = fetch_post_comments(subreddit, post['id'])
+            for c in comments:
+                all_comments.append(extract_comment_features(c, subreddit))
+            time.sleep(REQUEST_DELAY)
 
-    # Save to CSV
-    print("\n" + "="*60)
-    print("SAVING DATA")
-    print("="*60)
+        print(f"  → {sum(1 for c in all_comments if c['subreddit'] == subreddit)} comments so far")
+
+    # --- Persist ---
+    submissions_df = pd.DataFrame(all_submissions).drop_duplicates(subset='id') if all_submissions else pd.DataFrame()
+    comments_df = pd.DataFrame(all_comments).drop_duplicates(subset='id') if all_comments else pd.DataFrame()
+
+    if submissions_df.empty:
+        print("\nWARNING: No submissions were collected.")
+        print("This usually means the Reddit API is not accessible from this network.")
+        print("Reddit blocks requests from datacenter/CI IP ranges.")
+        print("To collect real data, run this script from a personal machine or use OAuth.")
+        return
+
     submissions_df.to_csv('reddit_submissions.csv', index=False)
     comments_df.to_csv('reddit_comments.csv', index=False)
 
-    print(f"\nTotal submissions collected: {len(submissions_df)}")
-    print(f"Total comments collected: {len(comments_df)}")
-    print(f"\nData saved to reddit_submissions.csv and reddit_comments.csv")
-
-    # Print summary statistics
     print("\n" + "="*60)
-    print("SUMMARY STATISTICS")
+    print("DONE")
     print("="*60)
+    print(f"Total submissions : {len(submissions_df)}")
+    print(f"Total comments    : {len(comments_df)}")
+    print(f"Date range (posts): {submissions_df['created_date'].min()} → {submissions_df['created_date'].max()}")
+    print(f"\nFiles written: reddit_submissions.csv  reddit_comments.csv")
+
     print("\nSubmissions by subreddit:")
-    print(submissions_df['subreddit'].value_counts())
+    print(submissions_df['subreddit'].value_counts().to_string())
     print("\nComments by subreddit:")
-    print(comments_df['subreddit'].value_counts())
+    print(comments_df['subreddit'].value_counts().to_string())
+
 
 if __name__ == "__main__":
     main()
