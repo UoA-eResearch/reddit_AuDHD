@@ -10,8 +10,21 @@ We paginate through the 'new' listing (most recent → oldest) and also pull
 all-time 'top' posts to capture as much historical content as possible.
 For each submission we fetch its comments via:
   https://www.reddit.com/r/{subreddit}/comments/{id}.json
+
+Tor routing
+-----------
+When the TOR_PROXY environment variable is set (or when a Tor SOCKS5 daemon
+is detected on 127.0.0.1:9050), all requests are routed through Tor so that
+Reddit's datacenter-IP blocks are bypassed.  The GHA workflow sets this
+automatically via the "torsocks" wrapper; you can also run:
+
+    torsocks python collect_reddit_data.py
+    # or
+    TOR_PROXY=socks5h://127.0.0.1:9050 python collect_reddit_data.py
 """
 
+import os
+import socket
 import requests
 import pandas as pd
 import time
@@ -36,11 +49,53 @@ REQUEST_DELAY = 2.0
 MAX_COMMENTS_PER_POST = 50
 
 
+def _detect_tor_proxy():
+    """
+    Return a proxies dict for requests if a Tor SOCKS5 proxy is available,
+    otherwise return None.
+
+    Detection order:
+      1. TOR_PROXY env var (e.g. ``socks5h://127.0.0.1:9050``)
+      2. A reachable TCP socket on 127.0.0.1:9050 (default Tor daemon port)
+      3. torsocks transparent-proxy mode (LD_PRELOAD is set by torsocks)
+    """
+    env_proxy = os.environ.get('TOR_PROXY', '').strip()
+    if env_proxy:
+        return {'http': env_proxy, 'https': env_proxy}
+
+    # Detect torsocks LD_PRELOAD wrapping – in that mode Python's socket calls
+    # are transparently redirected, so we don't need an explicit proxy dict.
+    if 'torsocks' in os.environ.get('LD_PRELOAD', '').lower():
+        return {}  # empty dict → use default (torsocks handles it)
+
+    # Try connecting directly to the default Tor SOCKS port
+    try:
+        s = socket.create_connection(('127.0.0.1', 9050), timeout=2)
+        s.close()
+        proxy_url = 'socks5h://127.0.0.1:9050'
+        return {'http': proxy_url, 'https': proxy_url}
+    except OSError:
+        pass
+
+    return None
+
+
+# Determine proxies once at import time
+_PROXIES = _detect_tor_proxy()
+if _PROXIES is not None:
+    print(f"[tor] Routing requests through Tor SOCKS5 proxy (proxies={_PROXIES or 'torsocks LD_PRELOAD'})")
+else:
+    print("[info] No Tor proxy detected – using direct connection")
+
+
 def reddit_get(url, params=None, retries=3):
     """Make a GET request to the Reddit JSON API with retry logic."""
+    kwargs = dict(headers=HEADERS, params=params, timeout=30)
+    if _PROXIES is not None:
+        kwargs['proxies'] = _PROXIES
     for attempt in range(retries):
         try:
-            response = requests.get(url, headers=HEADERS, params=params, timeout=30)
+            response = requests.get(url, **kwargs)
             if response.status_code == 200:
                 return response.json()
             elif response.status_code == 429:
