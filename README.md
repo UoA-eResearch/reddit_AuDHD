@@ -79,14 +79,23 @@ Average compound score: **0.123** (mildly positive overall)
 
 After running `analyze_sentiment.py`, the following visualization files will be generated:
 
-1. **sentiment_analysis_overview.png** - Comprehensive dashboard showing:
-   - Pie charts of sentiment distribution
-   - Time series of sentiment trends
-   - Category comparisons
+### Sentiment Analysis Overview
 
-2. **sentiment_by_category.png** - Detailed comparison of Autism vs ADHD communities over time
+![Sentiment Analysis Overview](sentiment_analysis_overview.png)
 
-3. **sentiment_by_subreddit.png** - Individual subreddit sentiment comparisons
+Comprehensive dashboard showing pie charts of sentiment distribution, time series of sentiment trends, and category comparisons.
+
+### Sentiment by Category
+
+![Sentiment by Category](sentiment_by_category.png)
+
+Detailed comparison of Autism vs ADHD communities over time.
+
+### Sentiment by Subreddit
+
+![Sentiment by Subreddit](sentiment_by_subreddit.png)
+
+Individual subreddit sentiment comparisons.
 
 ## Methodology
 
