@@ -102,7 +102,7 @@ def create_visualizations(submissions_df, comments_df):
     axes[0, 1].set_title('Comment Sentiment Distribution')
 
     # 3. Sentiment over time (monthly average) for submissions
-    submissions_monthly = submissions_df.groupby(pd.Grouper(key='created_date', freq='M'))['sentiment_score'].mean()
+    submissions_monthly = submissions_df.groupby(pd.Grouper(key='created_date', freq='ME'))['sentiment_score'].mean()
     axes[1, 0].plot(submissions_monthly.index, submissions_monthly.values, marker='o', linewidth=2)
     axes[1, 0].set_title('Average Submission Sentiment Over Time')
     axes[1, 0].set_xlabel('Date')
@@ -112,7 +112,7 @@ def create_visualizations(submissions_df, comments_df):
     axes[1, 0].grid(True, alpha=0.3)
 
     # 4. Sentiment over time (monthly average) for comments
-    comments_monthly = comments_df.groupby(pd.Grouper(key='created_date', freq='M'))['sentiment_score'].mean()
+    comments_monthly = comments_df.groupby(pd.Grouper(key='created_date', freq='ME'))['sentiment_score'].mean()
     axes[1, 1].plot(comments_monthly.index, comments_monthly.values, marker='o', linewidth=2, color='orange')
     axes[1, 1].set_title('Average Comment Sentiment Over Time')
     axes[1, 1].set_xlabel('Date')
@@ -149,7 +149,7 @@ def create_visualizations(submissions_df, comments_df):
     # Submissions by category
     for category in ['Autism', 'ADHD']:
         data = submissions_df[submissions_df['category'] == category]
-        monthly = data.groupby(pd.Grouper(key='created_date', freq='M'))['sentiment_score'].mean()
+        monthly = data.groupby(pd.Grouper(key='created_date', freq='ME'))['sentiment_score'].mean()
         axes[0].plot(monthly.index, monthly.values, marker='o', linewidth=2, label=category)
 
     axes[0].set_title('Submission Sentiment Over Time')
@@ -163,7 +163,7 @@ def create_visualizations(submissions_df, comments_df):
     # Comments by category
     for category in ['Autism', 'ADHD']:
         data = comments_df[comments_df['category'] == category]
-        monthly = data.groupby(pd.Grouper(key='created_date', freq='M'))['sentiment_score'].mean()
+        monthly = data.groupby(pd.Grouper(key='created_date', freq='ME'))['sentiment_score'].mean()
         axes[1].plot(monthly.index, monthly.values, marker='o', linewidth=2, label=category)
 
     axes[1].set_title('Comment Sentiment Over Time')
