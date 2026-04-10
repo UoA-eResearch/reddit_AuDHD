@@ -339,6 +339,16 @@ def _save_data_incrementally(new_submissions, new_comments, submission_cols, com
                        .drop_duplicates(subset='id') if new_comments
                        else pd.DataFrame(columns=comment_cols))
 
+    # Count truly new items by finding IDs not in existing data
+    existing_sub_ids = set(existing_submissions['id']) if not existing_submissions.empty else set()
+    existing_com_ids = set(existing_comments['id']) if not existing_comments.empty else set()
+
+    new_sub_ids = set(new_submissions_df['id']) if not new_submissions_df.empty else set()
+    new_com_ids = set(new_comments_df['id']) if not new_comments_df.empty else set()
+
+    truly_new_subs = len(new_sub_ids - existing_sub_ids)
+    truly_new_coms = len(new_com_ids - existing_com_ids)
+
     submissions_df = (pd.concat([existing_submissions, new_submissions_df], ignore_index=True)
                       .drop_duplicates(subset='id'))
     comments_df = (pd.concat([existing_comments, new_comments_df], ignore_index=True)
@@ -347,7 +357,7 @@ def _save_data_incrementally(new_submissions, new_comments, submission_cols, com
     submissions_df.to_csv('reddit_submissions.csv', index=False)
     comments_df.to_csv('reddit_comments.csv', index=False)
 
-    return len(new_submissions_df), len(new_comments_df), len(submissions_df), len(comments_df)
+    return truly_new_subs, truly_new_coms, len(submissions_df), len(comments_df)
 
 
 def main():
