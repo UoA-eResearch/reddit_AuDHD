@@ -313,6 +313,43 @@ def extract_comment_features(comment, subreddit):
     }
 
 
+def _load_existing(path, cols):
+    """Load an existing CSV, returning an empty DataFrame if absent/empty."""
+    try:
+        df = pd.read_csv(path)
+        if df.empty or 'id' not in df.columns:
+            return pd.DataFrame(columns=cols)
+        return df
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        return pd.DataFrame(columns=cols)
+
+
+def _save_data_incrementally(new_submissions, new_comments, submission_cols, comment_cols):
+    """
+    Merge new data with existing CSV files and save immediately.
+    This ensures data is preserved even if the script is interrupted by a timeout.
+    """
+    existing_submissions = _load_existing('reddit_submissions.csv', submission_cols)
+    existing_comments = _load_existing('reddit_comments.csv', comment_cols)
+
+    new_submissions_df = (pd.DataFrame(new_submissions, columns=submission_cols)
+                          .drop_duplicates(subset='id') if new_submissions
+                          else pd.DataFrame(columns=submission_cols))
+    new_comments_df = (pd.DataFrame(new_comments, columns=comment_cols)
+                       .drop_duplicates(subset='id') if new_comments
+                       else pd.DataFrame(columns=comment_cols))
+
+    submissions_df = (pd.concat([existing_submissions, new_submissions_df], ignore_index=True)
+                      .drop_duplicates(subset='id'))
+    comments_df = (pd.concat([existing_comments, new_comments_df], ignore_index=True)
+                   .drop_duplicates(subset='id'))
+
+    submissions_df.to_csv('reddit_submissions.csv', index=False)
+    comments_df.to_csv('reddit_comments.csv', index=False)
+
+    return len(new_submissions_df), len(new_comments_df), len(submissions_df), len(comments_df)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Collect Reddit AuDHD data')
     parser.add_argument(
@@ -332,84 +369,65 @@ def main():
     print(f"Target subreddits: {', '.join(ALL_SUBREDDITS)}")
     print()
 
-    all_submissions = []
-    all_comments = []
-
-    for subreddit in ALL_SUBREDDITS:
-        print(f"\n{'='*60}")
-        print(f"Subreddit: r/{subreddit}")
-        print('='*60)
-
-        # --- Submissions ---
-        posts = collect_submissions(subreddit, max_pages=max_pages)
-        print(f"  → {len(posts)} unique posts collected")
-        sub_rows = [extract_submission_features(p) for p in posts]
-        all_submissions.extend(sub_rows)
-
-        if args.seed:
-            continue  # skip comment fetching in seed mode
-
-        # --- Comments (fetch per post) ---
-        print(f"  Fetching comments for {len(posts)} posts …")
-        for post in tqdm(posts, desc=f"  r/{subreddit} comments"):
-            comments = fetch_post_comments(subreddit, post['id'])
-            for c in comments:
-                all_comments.append(extract_comment_features(c, subreddit))
-            time.sleep(REQUEST_DELAY)
-
-        print(f"  → {sum(1 for c in all_comments if c['subreddit'] == subreddit)} comments so far")
-
-    # --- Schema for empty DataFrames (ensures CSV always has a header row) ---
+    # --- Schema for DataFrames (ensures CSV always has a header row) ---
     SUBMISSION_COLS = ['id', 'subreddit', 'title', 'selftext', 'author_hash', 'score',
                        'upvote_ratio', 'num_comments', 'created_utc', 'created_date',
                        'url', 'is_self', 'permalink']
     COMMENT_COLS = ['id', 'subreddit', 'body', 'author_hash', 'score',
                     'created_utc', 'created_date', 'parent_id', 'link_id']
 
-    new_submissions = (pd.DataFrame(all_submissions, columns=SUBMISSION_COLS)
-                       .drop_duplicates(subset='id') if all_submissions
-                       else pd.DataFrame(columns=SUBMISSION_COLS))
-    new_comments = (pd.DataFrame(all_comments, columns=COMMENT_COLS)
-                    .drop_duplicates(subset='id') if all_comments
-                    else pd.DataFrame(columns=COMMENT_COLS))
+    total_new_submissions = 0
+    total_new_comments = 0
 
-    if new_submissions.empty:
+    for subreddit in ALL_SUBREDDITS:
+        print(f"\n{'='*60}")
+        print(f"Subreddit: r/{subreddit}")
+        print('='*60)
+
+        subreddit_submissions = []
+        subreddit_comments = []
+
+        # --- Submissions ---
+        posts = collect_submissions(subreddit, max_pages=max_pages)
+        print(f"  → {len(posts)} unique posts collected")
+        sub_rows = [extract_submission_features(p) for p in posts]
+        subreddit_submissions.extend(sub_rows)
+
+        if not args.seed:
+            # --- Comments (fetch per post) ---
+            print(f"  Fetching comments for {len(posts)} posts …")
+            for post in tqdm(posts, desc=f"  r/{subreddit} comments"):
+                comments = fetch_post_comments(subreddit, post['id'])
+                for c in comments:
+                    subreddit_comments.append(extract_comment_features(c, subreddit))
+                time.sleep(REQUEST_DELAY)
+
+            print(f"  → {len(subreddit_comments)} comments collected")
+
+        # --- Save incrementally after each subreddit ---
+        new_subs, new_coms, total_subs, total_coms = _save_data_incrementally(
+            subreddit_submissions, subreddit_comments, SUBMISSION_COLS, COMMENT_COLS
+        )
+        total_new_submissions += new_subs
+        total_new_comments += new_coms
+        print(f"  → Saved to CSV (total: {total_subs} submissions, {total_coms} comments)")
+
+    # --- Load final saved data for summary ---
+    submissions_df = _load_existing('reddit_submissions.csv', SUBMISSION_COLS)
+    comments_df = _load_existing('reddit_comments.csv', COMMENT_COLS)
+
+    if submissions_df.empty:
         print("\nWARNING: No submissions were collected.")
         print("This usually means the Reddit API is not accessible from this network.")
         print("Reddit blocks requests from datacenter/CI IP ranges.")
         print("To collect real data, run with Tor: TOR_PROXY=socks5h://127.0.0.1:9050 python3 collect_reddit_data.py")
         return
 
-    # --- Cross-run deduplication: merge with any previously saved CSV ---
-    def _load_existing(path, cols):
-        """Load an existing CSV, returning an empty DataFrame if absent/empty."""
-        try:
-            df = pd.read_csv(path)
-            if df.empty or 'id' not in df.columns:
-                return pd.DataFrame(columns=cols)
-            return df
-        except (FileNotFoundError, pd.errors.EmptyDataError):
-            return pd.DataFrame(columns=cols)
-
-    existing_submissions = _load_existing('reddit_submissions.csv', SUBMISSION_COLS)
-    existing_comments = _load_existing('reddit_comments.csv', COMMENT_COLS)
-
-    submissions_df = (pd.concat([existing_submissions, new_submissions], ignore_index=True)
-                      .drop_duplicates(subset='id'))
-    comments_df = (pd.concat([existing_comments, new_comments], ignore_index=True)
-                   .drop_duplicates(subset='id'))
-
-    submissions_df.to_csv('reddit_submissions.csv', index=False)
-    comments_df.to_csv('reddit_comments.csv', index=False)
-
-    new_sub_count = len(new_submissions)
-    new_com_count = len(new_comments)
-
     print("\n" + "="*60)
     print("DONE")
     print("="*60)
-    print(f"New submissions this run : {new_sub_count}")
-    print(f"New comments this run    : {new_com_count}")
+    print(f"New submissions this run : {total_new_submissions}")
+    print(f"New comments this run    : {total_new_comments}")
     print(f"Total submissions (all)  : {len(submissions_df)}")
     print(f"Total comments (all)     : {len(comments_df)}")
     print(f"Date range (posts)       : {submissions_df['created_date'].min()} → {submissions_df['created_date'].max()}")
