@@ -50,6 +50,7 @@ jobs:
       - name: Collect Reddit data (via Tor)
         run: torsocks python collect_reddit_data.py
         timeout-minutes: 350
+        continue-on-error: true
 
       # Only proceed with analysis if the collection produced real rows.
       - name: Check if data was collected
