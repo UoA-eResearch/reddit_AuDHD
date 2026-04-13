@@ -405,8 +405,36 @@ def main():
 
         if not args.seed:
             # --- Comments (fetch per post) ---
-            print(f"  Fetching comments for {len(posts)} posts …")
-            for post in tqdm(posts, desc=f"  r/{subreddit} comments"):
+            # Load existing comments to check what we already have
+            existing_comments = _load_existing('reddit_comments.csv', COMMENT_COLS)
+            existing_comment_links = {}
+            if not existing_comments.empty:
+                # Build a map of link_id -> count of comments we have
+                for _, row in existing_comments.iterrows():
+                    link_id = row.get('link_id', '')
+                    if link_id:
+                        existing_comment_links[link_id] = existing_comment_links.get(link_id, 0) + 1
+
+            posts_to_fetch = []
+            skipped_count = 0
+            for post in posts:
+                post_id = post['id']
+                link_id = f"t3_{post_id}"
+                num_comments = post.get('num_comments', 0)
+                collected_comments = existing_comment_links.get(link_id, 0)
+
+                # Skip if we already have all comments (or at least MAX_COMMENTS_PER_POST)
+                if num_comments > 0 and collected_comments >= min(num_comments, MAX_COMMENTS_PER_POST):
+                    skipped_count += 1
+                    continue
+
+                posts_to_fetch.append(post)
+
+            if skipped_count > 0:
+                print(f"  → Skipping {skipped_count} posts (comments already collected)")
+
+            print(f"  Fetching comments for {len(posts_to_fetch)} posts …")
+            for post in tqdm(posts_to_fetch, desc=f"  r/{subreddit} comments"):
                 comments = fetch_post_comments(subreddit, post['id'])
                 for c in comments:
                     subreddit_comments.append(extract_comment_features(c, subreddit))
