@@ -48,7 +48,17 @@ jobs:
           echo "::warning::Tor did not fully bootstrap within 120 s – collection may fail."
 
       - name: Collect Reddit data (via Tor)
-        run: torsocks python collect_reddit_data.py
+        id: collect_data
+        run: |
+          # Capture output and extract new counts
+          torsocks python collect_reddit_data.py | tee /tmp/collect_output.txt
+
+          # Extract the counts from the output
+          NEW_SUBS=$(grep "New submissions this run" /tmp/collect_output.txt | grep -oP '\d+' || echo "0")
+          NEW_COMS=$(grep "New comments this run" /tmp/collect_output.txt | grep -oP '\d+' || echo "0")
+
+          echo "new_submissions=$NEW_SUBS" >> "$GITHUB_OUTPUT"
+          echo "new_comments=$NEW_COMS" >> "$GITHUB_OUTPUT"
         timeout-minutes: 350
         continue-on-error: true
 
@@ -83,7 +93,7 @@ jobs:
 
           # Only commit when there are actual changes.
           if ! git diff --staged --quiet; then
-            git commit -m "chore: update Reddit data and sentiment analysis [$(date -u '+%Y-%m-%d')]"
+            git commit -m "chore: update Reddit data and sentiment analysis [+${{ steps.collect_data.outputs.new_submissions }} posts, +${{ steps.collect_data.outputs.new_comments }} comments]"
 
             # Handle case where new commits were pushed to main while we were running
             # Try pushing up to 3 times with pull --rebase in between
