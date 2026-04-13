@@ -50,12 +50,36 @@ jobs:
       - name: Collect Reddit data (via Tor)
         id: collect_data
         run: |
-          # Capture output and extract new counts
+          # Count existing rows before collection (excluding header)
+          SUBS_BEFORE=0
+          COMS_BEFORE=0
+          if [ -f reddit_submissions.csv ]; then
+            SUBS_BEFORE=$(($(wc -l < reddit_submissions.csv) - 1))
+          fi
+          if [ -f reddit_comments.csv ]; then
+            COMS_BEFORE=$(($(wc -l < reddit_comments.csv) - 1))
+          fi
+
+          # Run collection (capture output for debugging but don't rely on it)
           torsocks python collect_reddit_data.py | tee /tmp/collect_output.txt
 
-          # Extract the counts from the output
-          NEW_SUBS=$(grep "New submissions this run" /tmp/collect_output.txt | grep -oP '\d+' || echo "0")
-          NEW_COMS=$(grep "New comments this run" /tmp/collect_output.txt | grep -oP '\d+' || echo "0")
+          # Count rows after collection (excluding header)
+          SUBS_AFTER=0
+          COMS_AFTER=0
+          if [ -f reddit_submissions.csv ]; then
+            SUBS_AFTER=$(($(wc -l < reddit_submissions.csv) - 1))
+          fi
+          if [ -f reddit_comments.csv ]; then
+            COMS_AFTER=$(($(wc -l < reddit_comments.csv) - 1))
+          fi
+
+          # Calculate new counts
+          NEW_SUBS=$((SUBS_AFTER - SUBS_BEFORE))
+          NEW_COMS=$((COMS_AFTER - COMS_BEFORE))
+
+          # Ensure non-negative values
+          if [ $NEW_SUBS -lt 0 ]; then NEW_SUBS=0; fi
+          if [ $NEW_COMS -lt 0 ]; then NEW_COMS=0; fi
 
           echo "new_submissions=$NEW_SUBS" >> "$GITHUB_OUTPUT"
           echo "new_comments=$NEW_COMS" >> "$GITHUB_OUTPUT"
