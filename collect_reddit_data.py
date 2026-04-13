@@ -423,8 +423,11 @@ def main():
                 num_comments = post.get('num_comments', 0)
                 collected_comments = existing_comment_links.get(link_id, 0)
 
-                # Skip if we already have all comments (or at least MAX_COMMENTS_PER_POST)
-                if num_comments > 0 and collected_comments >= min(num_comments, MAX_COMMENTS_PER_POST):
+                # Skip if post has no comments or we already have all comments
+                if num_comments == 0:
+                    skipped_count += 1
+                    continue
+                if collected_comments >= min(num_comments, MAX_COMMENTS_PER_POST):
                     skipped_count += 1
                     continue
 
