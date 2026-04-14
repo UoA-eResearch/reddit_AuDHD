@@ -437,13 +437,28 @@ def main():
                 print(f"  → Skipping {skipped_count} posts (comments already collected)")
 
             print(f"  Fetching comments for {len(posts_to_fetch)} posts …")
-            for post in tqdm(posts_to_fetch, desc=f"  r/{subreddit} comments"):
+            # Save comments every SAVE_INTERVAL posts to prevent data loss on timeout
+            SAVE_INTERVAL = 50
+            checkpoint_new_comments = 0
+            for idx, post in enumerate(tqdm(posts_to_fetch, desc=f"  r/{subreddit} comments"), start=1):
                 comments = fetch_post_comments(subreddit, post['id'])
                 for c in comments:
                     subreddit_comments.append(extract_comment_features(c, subreddit))
                 time.sleep(REQUEST_DELAY)
 
-            print(f"  → {len(subreddit_comments)} comments collected")
+                # Save incrementally every SAVE_INTERVAL posts to survive timeouts
+                if idx % SAVE_INTERVAL == 0 and subreddit_comments:
+                    _, saved_coms, _, _ = _save_data_incrementally(
+                        [], subreddit_comments, SUBMISSION_COLS, COMMENT_COLS
+                    )
+                    checkpoint_new_comments += saved_coms
+                    if saved_coms > 0:
+                        print(f"\n  → Checkpoint: saved {saved_coms} new comments ({idx}/{len(posts_to_fetch)} posts processed)")
+                    # Clear the buffer after saving
+                    subreddit_comments = []
+
+            print(f"  → {len(subreddit_comments)} comments collected in final batch")
+            total_new_comments += checkpoint_new_comments
 
         # --- Save incrementally after each subreddit ---
         new_subs, new_coms, total_subs, total_coms = _save_data_incrementally(
