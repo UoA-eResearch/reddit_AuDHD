@@ -18,37 +18,35 @@ This project analyzes sentiment patterns in discussions about Autism and ADHD on
 - r/adhdwomen
 - r/adhd_anxiety
 
-## Initial Results (Seed Collection — April 2026)
+## Dataset Statistics (Last Updated: 2026-04-14)
 
-A seed dataset was collected on 2026-04-09 via Tor (with automatic exit-node rotation)
-across all 8 subreddits.  The weekly GitHub Actions workflow will continue to grow this
-dataset over time.
+Data collection began on 2026-04-09 via Tor (with automatic exit-node rotation). The weekly GitHub Actions workflow continues to grow this dataset over time.
 
 ### Dataset Size
 
 | Metric | Value |
 |---|---|
-| Total posts | **1,593** |
-| Unique redditors (posts) | **1,345** (counted by hashed author ID) |
-| Autism-community posts | 800 (r/autism, r/aspergers, r/aspergirls, r/AutisticAdults) |
+| Total posts | **6,055** |
+| Unique redditors (posts) | **4,421** (counted by hashed author ID) |
+| Autism-community posts | 5,262 (r/autism, r/aspergers, r/aspergirls, r/AutisticAdults) |
 | ADHD-community posts | 793 (r/ADHD, r/ADHDmemes, r/adhdwomen, r/adhd_anxiety) |
-| Date range | 2015-03-29 → 2026-04-09 |
+| Date range | 2015-03-29 → 2026-04-14 |
 
 ### Sentiment Overview (Posts)
 
 | Sentiment | Count | % |
 |---|---|---|
-| Positive (score ≥ 0.05) | 785 | 49.3% |
-| Negative (score ≤ −0.05) | 524 | 32.9% |
-| Neutral | 284 | 17.8% |
+| Positive (score ≥ 0.05) | 3,247 | 53.6% |
+| Negative (score ≤ −0.05) | 2,277 | 37.6% |
+| Neutral | 531 | 8.8% |
 
-Average compound score: **0.123** (mildly positive overall)
+Average compound score: **0.138** (mildly positive overall)
 
 ### Sentiment by Community
 
 | Community | Avg. Sentiment |
 |---|---|
-| Autism | 0.139 |
+| Autism | 0.142 |
 | ADHD | 0.107 |
 
 ### Sentiment by Subreddit
@@ -56,24 +54,23 @@ Average compound score: **0.123** (mildly positive overall)
 | Subreddit | Avg. Sentiment |
 |---|---|
 | r/adhdwomen | +0.243 (most positive) |
+| r/aspergirls | +0.207 |
 | r/AutisticAdults | +0.156 |
-| r/aspergirls | +0.152 |
+| r/autism | +0.136 |
 | r/ADHD | +0.134 |
-| r/autism | +0.129 |
-| r/aspergers | +0.119 |
+| r/aspergers | +0.087 |
 | r/ADHDmemes | +0.064 |
-| r/adhd_anxiety | −0.015 (only subreddit with net-negative avg.) |
+| r/adhd_anxiety | -0.015 (only subreddit with net-negative avg.) |
 
 ### Notable Examples
 
-**Most positive post:** *"I went through 700 reddit comments and collected 131 ADHD pro-tips!"*
-(r/ADHD, sentiment 0.9998)
+**Most positive post:** *"Does autism make it harder to get over someone?..."*
+(r/aspergirls, sentiment 0.9999)
 
 **Most negative post:** *"anxiety, depression, IBS, ADHD, but no proper relief from pills?"*
 (r/adhd_anxiety, sentiment −0.9997)
 
-> **Note:** These results are from a seed collection of 100 posts per subreddit per listing.
-> The dataset will grow automatically each week via the GitHub Actions cron workflow.
+> **Note:** This dataset is automatically updated weekly via GitHub Actions. Statistics shown reflect the most recent analysis run.
 
 ## Visualizations
 

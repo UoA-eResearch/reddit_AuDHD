@@ -218,9 +218,10 @@ def update_readme(stats):
 
     # Update the note at the bottom of results section
     readme = re.sub(
-        r'> \*\*Note:\*\* These results are from.*?via the GitHub Actions cron workflow\.',
+        r'> \*\*Note:\*\*.*?via the GitHub Actions cron workflow\.',
         f'> **Note:** This dataset is automatically updated weekly via GitHub Actions. Statistics shown reflect the most recent analysis run.',
-        readme
+        readme,
+        flags=re.DOTALL
     )
 
     with open('README.md', 'w') as f:
