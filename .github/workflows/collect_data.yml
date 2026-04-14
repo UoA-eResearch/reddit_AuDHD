@@ -47,44 +47,77 @@ jobs:
           done
           echo "::warning::Tor did not fully bootstrap within 120 s – collection may fail."
 
-      - name: Collect Reddit data (via Tor)
-        id: collect_data
+      - name: Count rows before collection
+        id: count_before
         run: |
           # Count existing rows before collection (excluding header)
           SUBS_BEFORE=0
           COMS_BEFORE=0
           if [ -f reddit_submissions.csv ]; then
-            SUBS_BEFORE=$(($(wc -l < reddit_submissions.csv) - 1))
+            LINES=$(wc -l < reddit_submissions.csv)
+            # Only subtract 1 if file has at least 1 line (header)
+            if [ "$LINES" -gt 0 ]; then
+              SUBS_BEFORE=$((LINES - 1))
+            fi
           fi
           if [ -f reddit_comments.csv ]; then
-            COMS_BEFORE=$(($(wc -l < reddit_comments.csv) - 1))
+            LINES=$(wc -l < reddit_comments.csv)
+            # Only subtract 1 if file has at least 1 line (header)
+            if [ "$LINES" -gt 0 ]; then
+              COMS_BEFORE=$((LINES - 1))
+            fi
           fi
 
-          # Run collection (capture output for debugging but don't rely on it)
-          torsocks python collect_reddit_data.py | tee /tmp/collect_output.txt
+          # Ensure non-negative values
+          if [ $SUBS_BEFORE -lt 0 ]; then SUBS_BEFORE=0; fi
+          if [ $COMS_BEFORE -lt 0 ]; then COMS_BEFORE=0; fi
 
+          echo "subs_before=$SUBS_BEFORE" >> "$GITHUB_OUTPUT"
+          echo "coms_before=$COMS_BEFORE" >> "$GITHUB_OUTPUT"
+
+      - name: Collect Reddit data (via Tor)
+        run: |
+          # Run collection (capture output for debugging but don't rely on it)
+          timeout 340m torsocks python collect_reddit_data.py | tee /tmp/collect_output.txt || true
+        timeout-minutes: 350
+        continue-on-error: true
+
+      - name: Count rows after collection
+        id: count_after
+        if: always()
+        run: |
           # Count rows after collection (excluding header)
           SUBS_AFTER=0
           COMS_AFTER=0
           if [ -f reddit_submissions.csv ]; then
-            SUBS_AFTER=$(($(wc -l < reddit_submissions.csv) - 1))
+            LINES=$(wc -l < reddit_submissions.csv)
+            # Only subtract 1 if file has at least 1 line (header)
+            if [ "$LINES" -gt 0 ]; then
+              SUBS_AFTER=$((LINES - 1))
+            fi
           fi
           if [ -f reddit_comments.csv ]; then
-            COMS_AFTER=$(($(wc -l < reddit_comments.csv) - 1))
+            LINES=$(wc -l < reddit_comments.csv)
+            # Only subtract 1 if file has at least 1 line (header)
+            if [ "$LINES" -gt 0 ]; then
+              COMS_AFTER=$((LINES - 1))
+            fi
           fi
 
-          # Calculate new counts
-          NEW_SUBS=$((SUBS_AFTER - SUBS_BEFORE))
-          NEW_COMS=$((COMS_AFTER - COMS_BEFORE))
-
           # Ensure non-negative values
+          if [ $SUBS_AFTER -lt 0 ]; then SUBS_AFTER=0; fi
+          if [ $COMS_AFTER -lt 0 ]; then COMS_AFTER=0; fi
+
+          # Calculate new counts
+          NEW_SUBS=$((SUBS_AFTER - ${{ steps.count_before.outputs.subs_before }}))
+          NEW_COMS=$((COMS_AFTER - ${{ steps.count_before.outputs.coms_before }}))
+
+          # Ensure non-negative deltas
           if [ $NEW_SUBS -lt 0 ]; then NEW_SUBS=0; fi
           if [ $NEW_COMS -lt 0 ]; then NEW_COMS=0; fi
 
           echo "new_submissions=$NEW_SUBS" >> "$GITHUB_OUTPUT"
           echo "new_comments=$NEW_COMS" >> "$GITHUB_OUTPUT"
-        timeout-minutes: 350
-        continue-on-error: true
 
       # Only proceed with analysis if the collection produced real rows.
       - name: Check if data was collected
@@ -101,6 +134,10 @@ jobs:
         if: steps.check_data.outputs.data_collected == 'true'
         run: python analyze_sentiment.py
 
+      - name: Update README statistics
+        if: steps.check_data.outputs.data_collected == 'true'
+        run: python update_readme_stats.py
+
       - name: Commit and push updated data
         if: steps.check_data.outputs.data_collected == 'true'
         run: |
@@ -113,11 +150,12 @@ jobs:
             reddit_comments_with_sentiment.csv \
             sentiment_analysis_overview.png \
             sentiment_by_category.png \
-            sentiment_by_subreddit.png
+            sentiment_by_subreddit.png \
+            README.md
 
           # Only commit when there are actual changes.
           if ! git diff --staged --quiet; then
-            git commit -m "chore: update Reddit data and sentiment analysis [+${{ steps.collect_data.outputs.new_submissions }} posts, +${{ steps.collect_data.outputs.new_comments }} comments]"
+            git commit -m "chore: update Reddit data and sentiment analysis [+${{ steps.count_after.outputs.new_submissions }} posts, +${{ steps.count_after.outputs.new_comments }} comments]"
 
             # Handle case where new commits were pushed to main while we were running
             # Try pushing up to 3 times with pull --rebase in between
