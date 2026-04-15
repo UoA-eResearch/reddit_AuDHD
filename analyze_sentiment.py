@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
 Script to analyze sentiment of Reddit posts and comments about Autism and ADHD.
+Reads data directly from zst-compressed archives in the data/ folder.
 """
+
+import json
+from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import zstandard
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from tqdm import tqdm
 
@@ -36,20 +41,91 @@ def categorize_sentiment(compound_score):
     else:
         return 'neutral'
 
+def _iter_ndjson_zst(zst_path: Path):
+    """Yield parsed JSON objects from a zstd-compressed NDJSON file."""
+    dctx = zstandard.ZstdDecompressor()
+    buf = b""
+    with open(zst_path, "rb") as fh, dctx.stream_reader(fh) as reader:
+        while True:
+            chunk = reader.read(131_072)
+            if not chunk:
+                break
+            buf += chunk
+            lines = buf.split(b"\n")
+            buf = lines[-1]
+            for line in lines[:-1]:
+                line = line.strip()
+                if line:
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        pass
+    if buf.strip():
+        try:
+            yield json.loads(buf)
+        except json.JSONDecodeError:
+            pass
+
+
+def load_submissions_from_zst(data_dir: Path):
+    """Load all submissions from zst archives in data_dir."""
+    submissions = []
+    for zst_file in sorted(data_dir.glob("*_submissions.zst")):
+        print(f"  Loading {zst_file.name}...")
+        for post in _iter_ndjson_zst(zst_file):
+            submissions.append({
+                'id': post.get('id', ''),
+                'subreddit': post.get('subreddit', ''),
+                'title': post.get('title', ''),
+                'selftext': post.get('selftext', ''),
+                'author_hash': post.get('author_hash', ''),
+                'score': post.get('score', 0),
+                'upvote_ratio': post.get('upvote_ratio', None),
+                'num_comments': post.get('num_comments', 0),
+                'created_utc': post.get('created_utc', 0),
+                'created_date': post.get('created_date', ''),
+                'url': post.get('url', ''),
+                'is_self': post.get('is_self', False),
+                'permalink': post.get('permalink', ''),
+            })
+    return pd.DataFrame(submissions)
+
+
+def load_comments_from_zst(data_dir: Path):
+    """Load all comments from zst archives in data_dir."""
+    comments = []
+    for zst_file in sorted(data_dir.glob("*_comments.zst")):
+        print(f"  Loading {zst_file.name}...")
+        for comment in _iter_ndjson_zst(zst_file):
+            comments.append({
+                'id': comment.get('id', ''),
+                'subreddit': comment.get('subreddit', ''),
+                'body': comment.get('body', ''),
+                'author_hash': comment.get('author_hash', ''),
+                'score': comment.get('score', 0),
+                'created_utc': comment.get('created_utc', 0),
+                'created_date': comment.get('created_date', ''),
+                'parent_id': comment.get('parent_id', ''),
+                'link_id': comment.get('link_id', ''),
+            })
+    return pd.DataFrame(comments)
+
+
 def load_and_analyze_data():
     """
-    Load data and perform sentiment analysis.
+    Load data from zst archives and perform sentiment analysis.
     """
-    print("Loading data...")
-    submissions_df = pd.read_csv('reddit_submissions.csv')
+    data_dir = Path("data")
 
-    # Comments CSV may be empty (e.g. after a seed-only run)
-    try:
-        comments_df = pd.read_csv('reddit_comments.csv')
-    except (pd.errors.EmptyDataError, FileNotFoundError):
-        comments_df = pd.DataFrame(columns=['id', 'subreddit', 'body', 'author',
-                                             'score', 'created_utc', 'created_date',
-                                             'parent_id', 'link_id'])
+    print("Loading submissions from zst archives...")
+    submissions_df = load_submissions_from_zst(data_dir)
+
+    print("\nLoading comments from zst archives...")
+    comments_df = load_comments_from_zst(data_dir)
+
+    if submissions_df.empty:
+        print("ERROR: No submissions found in data/ folder")
+        return pd.DataFrame(), pd.DataFrame()
 
     # Analyze sentiment for submissions
     print("\nAnalyzing sentiment for submissions...")
@@ -60,14 +136,16 @@ def load_and_analyze_data():
     submissions_df['sentiment_category'] = submissions_df['sentiment_score'].apply(categorize_sentiment)
 
     # Analyze sentiment for comments
-    print("\nAnalyzing sentiment for comments...")
-    tqdm.pandas(desc="Comments")
-    comments_df['sentiment_score'] = comments_df['body'].progress_apply(analyze_sentiment)
-    comments_df['sentiment_category'] = comments_df['sentiment_score'].apply(categorize_sentiment)
+    if not comments_df.empty:
+        print("\nAnalyzing sentiment for comments...")
+        tqdm.pandas(desc="Comments")
+        comments_df['sentiment_score'] = comments_df['body'].progress_apply(analyze_sentiment)
+        comments_df['sentiment_category'] = comments_df['sentiment_score'].apply(categorize_sentiment)
 
     # Convert dates to datetime
     submissions_df['created_date'] = pd.to_datetime(submissions_df['created_date'])
-    comments_df['created_date'] = pd.to_datetime(comments_df['created_date'])
+    if not comments_df.empty:
+        comments_df['created_date'] = pd.to_datetime(comments_df['created_date'])
 
     # Add category column for Autism vs ADHD
     autism_subs = ['autism', 'aspergers', 'aspergirls', 'AutisticAdults']
@@ -75,9 +153,10 @@ def load_and_analyze_data():
     submissions_df['category'] = submissions_df['subreddit'].apply(
         lambda x: 'Autism' if x.lower() in autism_set else 'ADHD'
     )
-    comments_df['category'] = comments_df['subreddit'].apply(
-        lambda x: 'Autism' if x.lower() in autism_set else 'ADHD'
-    )
+    if not comments_df.empty:
+        comments_df['category'] = comments_df['subreddit'].apply(
+            lambda x: 'Autism' if x.lower() in autism_set else 'ADHD'
+        )
 
     return submissions_df, comments_df
 
