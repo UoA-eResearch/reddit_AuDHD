@@ -134,13 +134,15 @@ def load_submissions_from_zst(data_dir: Path):
     Derives author_hash (SHA-256 of author) and created_date (from created_utc)
     to match the schema used by collect_reddit_data.py / import_seed_data.py.
     Records with a missing or empty id are skipped.
+
+    Processes one zst file at a time, concatenating batches per file to avoid OOM.
     """
     columns = [
         'id', 'subreddit', 'title', 'selftext', 'author_hash', 'score',
         'upvote_ratio', 'num_comments', 'created_utc', 'created_date',
         'url', 'is_self', 'permalink',
     ]
-    frames = []
+    all_frames = []
     for zst_file in sorted(data_dir.glob("*_submissions.zst")):
         print(f"  Loading {zst_file.name}...")
 
@@ -167,11 +169,16 @@ def load_submissions_from_zst(data_dir: Path):
 
         records = (r for post in _iter_ndjson_zst(zst_file)
                    if (r := _submission_record(post)) is not None)
-        frames.extend(_dataframe_batches(records, columns))
+        # Collect batches for this file, then concat and clear to manage memory
+        file_frames = list(_dataframe_batches(records, columns))
+        if file_frames:
+            file_df = pd.concat(file_frames, ignore_index=True)
+            all_frames.append(file_df)
+            del file_frames  # Release memory from intermediate list
 
-    if not frames:
+    if not all_frames:
         return pd.DataFrame(columns=columns)
-    return pd.concat(frames, ignore_index=True)
+    return pd.concat(all_frames, ignore_index=True)
 
 
 def load_comments_from_zst(data_dir: Path):
@@ -180,12 +187,14 @@ def load_comments_from_zst(data_dir: Path):
     Derives author_hash (SHA-256 of author) and created_date (from created_utc)
     to match the schema used by collect_reddit_data.py / import_seed_data.py.
     Records with a missing or empty id are skipped.
+
+    Processes one zst file at a time, concatenating batches per file to avoid OOM.
     """
     columns = [
         'id', 'subreddit', 'body', 'author_hash', 'score',
         'created_utc', 'created_date', 'parent_id', 'link_id',
     ]
-    frames = []
+    all_frames = []
     for zst_file in sorted(data_dir.glob("*_comments.zst")):
         print(f"  Loading {zst_file.name}...")
 
@@ -208,11 +217,16 @@ def load_comments_from_zst(data_dir: Path):
 
         records = (r for comment in _iter_ndjson_zst(zst_file)
                    if (r := _comment_record(comment)) is not None)
-        frames.extend(_dataframe_batches(records, columns))
+        # Collect batches for this file, then concat and clear to manage memory
+        file_frames = list(_dataframe_batches(records, columns))
+        if file_frames:
+            file_df = pd.concat(file_frames, ignore_index=True)
+            all_frames.append(file_df)
+            del file_frames  # Release memory from intermediate list
 
-    if not frames:
+    if not all_frames:
         return pd.DataFrame(columns=columns)
-    return pd.concat(frames, ignore_index=True)
+    return pd.concat(all_frames, ignore_index=True)
 
 
 def load_and_analyze_data():
