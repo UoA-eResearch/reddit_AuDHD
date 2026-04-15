@@ -1,13 +1,45 @@
 #!/usr/bin/env python3
 """
 Script to analyze sentiment of Reddit posts and comments about Autism and ADHD.
+
+Data sources:
+1. Historical seed data: zst-compressed archives in data/ folder (from academictorrents.com)
+2. 2026 data: CSV files (reddit_submissions_2026.csv, reddit_comments_2026.csv)
+
+Combines both sources, deduplicates by ID, and performs sentiment analysis.
 """
+
+import hashlib
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import zstandard
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from tqdm import tqdm
+
+# LFS pointer files start with this prefix
+_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com"
+# Zstd magic bytes (first 4 bytes of any valid zstd frame)
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def _hash_author(username: str) -> str:
+    """Return first 16 hex chars of SHA-256(username), empty for deleted."""
+    if not username or username in ("[deleted]", "[removed]"):
+        return ""
+    return hashlib.sha256(username.encode()).hexdigest()[:16]
+
+
+def _utc_date(ts) -> str:
+    """Convert a UTC timestamp to a YYYY-MM-DD string."""
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError):
+        return ""
 
 # Initialize VADER sentiment analyzer
 analyzer = SentimentIntensityAnalyzer()
@@ -36,20 +68,193 @@ def categorize_sentiment(compound_score):
     else:
         return 'neutral'
 
+def _iter_ndjson_zst(zst_path: Path):
+    """Yield parsed JSON objects from a zstd-compressed NDJSON file.
+
+    Raises RuntimeError with a helpful message if the file looks like a Git LFS
+    pointer (i.e., `git lfs pull` has not been run) or is not a valid zstd archive.
+    """
+    with open(zst_path, "rb") as fh:
+        header = fh.read(len(_LFS_POINTER_PREFIX))
+
+    if header.startswith(_LFS_POINTER_PREFIX):
+        raise RuntimeError(
+            f"{zst_path} is a Git LFS pointer file, not the real archive. "
+            "Run `git lfs pull` to download the actual data."
+        )
+    if not header.startswith(_ZSTD_MAGIC):
+        raise RuntimeError(
+            f"{zst_path} does not appear to be a valid zstd archive "
+            f"(first bytes: {header[:4]!r}). Run `git lfs pull` if using Git LFS."
+        )
+
+    dctx = zstandard.ZstdDecompressor()
+    buf = bytearray()
+    with open(zst_path, "rb") as fh, dctx.stream_reader(fh) as reader:
+        while True:
+            chunk = reader.read(131_072)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            newline_index = buf.find(b"\n")
+            while newline_index != -1:
+                line = buf[:newline_index].strip()
+                del buf[:newline_index + 1]
+                if line:
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        pass
+                newline_index = buf.find(b"\n")
+    remaining = buf.strip()
+    if remaining:
+        try:
+            yield json.loads(remaining)
+        except json.JSONDecodeError:
+            pass
+
+
+def _dataframe_batches(records, columns, batch_size=50_000):
+    """Yield DataFrames built from bounded-size batches of record dicts."""
+    batch = []
+    for record in records:
+        batch.append(record)
+        if len(batch) >= batch_size:
+            yield pd.DataFrame(batch, columns=columns)
+            batch.clear()
+    if batch:
+        yield pd.DataFrame(batch, columns=columns)
+
+
+def load_submissions_from_zst(data_dir: Path):
+    """Load all submissions from zst archives in data_dir.
+
+    Derives author_hash (SHA-256 of author) and created_date (from created_utc)
+    to match the schema used by collect_reddit_data.py / import_seed_data.py.
+    Records with a missing or empty id are skipped.
+    """
+    columns = [
+        'id', 'subreddit', 'title', 'selftext', 'author_hash', 'score',
+        'upvote_ratio', 'num_comments', 'created_utc', 'created_date',
+        'url', 'is_self', 'permalink',
+    ]
+    frames = []
+    for zst_file in sorted(data_dir.glob("*_submissions.zst")):
+        print(f"  Loading {zst_file.name}...")
+
+        def _submission_record(post):
+            post_id = post.get('id', '')
+            if not post_id:
+                return None
+            ts = post.get('created_utc', 0)
+            return {
+                'id': post_id,
+                'subreddit': post.get('subreddit', ''),
+                'title': post.get('title', ''),
+                'selftext': post.get('selftext', ''),
+                'author_hash': _hash_author(post.get('author', '')),
+                'score': post.get('score', 0),
+                'upvote_ratio': post.get('upvote_ratio', None),
+                'num_comments': post.get('num_comments', 0),
+                'created_utc': ts,
+                'created_date': _utc_date(ts),
+                'url': post.get('url', ''),
+                'is_self': post.get('is_self', False),
+                'permalink': post.get('permalink', ''),
+            }
+
+        records = (r for post in _iter_ndjson_zst(zst_file)
+                   if (r := _submission_record(post)) is not None)
+        frames.extend(_dataframe_batches(records, columns))
+
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True)
+
+
+def load_comments_from_zst(data_dir: Path):
+    """Load all comments from zst archives in data_dir.
+
+    Derives author_hash (SHA-256 of author) and created_date (from created_utc)
+    to match the schema used by collect_reddit_data.py / import_seed_data.py.
+    Records with a missing or empty id are skipped.
+    """
+    columns = [
+        'id', 'subreddit', 'body', 'author_hash', 'score',
+        'created_utc', 'created_date', 'parent_id', 'link_id',
+    ]
+    frames = []
+    for zst_file in sorted(data_dir.glob("*_comments.zst")):
+        print(f"  Loading {zst_file.name}...")
+
+        def _comment_record(comment):
+            comment_id = comment.get('id', '')
+            if not comment_id:
+                return None
+            ts = comment.get('created_utc', 0)
+            return {
+                'id': comment_id,
+                'subreddit': comment.get('subreddit', ''),
+                'body': comment.get('body', ''),
+                'author_hash': _hash_author(comment.get('author', '')),
+                'score': comment.get('score', 0),
+                'created_utc': ts,
+                'created_date': _utc_date(ts),
+                'parent_id': comment.get('parent_id', ''),
+                'link_id': comment.get('link_id', ''),
+            }
+
+        records = (r for comment in _iter_ndjson_zst(zst_file)
+                   if (r := _comment_record(comment)) is not None)
+        frames.extend(_dataframe_batches(records, columns))
+
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True)
+
+
 def load_and_analyze_data():
     """
-    Load data and perform sentiment analysis.
+    Load data from zst archives (historical seed data) and 2026 CSV files (new data).
+    Combines both sources and deduplicates by ID.
     """
-    print("Loading data...")
-    submissions_df = pd.read_csv('reddit_submissions.csv')
+    data_dir = Path("data")
 
-    # Comments CSV may be empty (e.g. after a seed-only run)
-    try:
-        comments_df = pd.read_csv('reddit_comments.csv')
-    except (pd.errors.EmptyDataError, FileNotFoundError):
-        comments_df = pd.DataFrame(columns=['id', 'subreddit', 'body', 'author',
-                                             'score', 'created_utc', 'created_date',
-                                             'parent_id', 'link_id'])
+    print("Loading submissions from zst archives (historical seed data)...")
+    submissions_df = load_submissions_from_zst(data_dir)
+
+    print("\nLoading comments from zst archives (historical seed data)...")
+    comments_df = load_comments_from_zst(data_dir)
+
+    # Also load 2026 data from CSV files if they exist
+    csv_2026_subs = Path("reddit_submissions_2026.csv")
+    csv_2026_coms = Path("reddit_comments_2026.csv")
+
+    if csv_2026_subs.exists():
+        print("\nLoading 2026 submissions from CSV...")
+        try:
+            subs_2026 = pd.read_csv(csv_2026_subs)
+            if not subs_2026.empty:
+                print(f"  Found {len(subs_2026)} submissions from 2026")
+                submissions_df = pd.concat([submissions_df, subs_2026], ignore_index=True)
+                submissions_df = submissions_df.drop_duplicates(subset='id', keep='last')
+        except (pd.errors.EmptyDataError, FileNotFoundError):
+            pass
+
+    if csv_2026_coms.exists():
+        print("\nLoading 2026 comments from CSV...")
+        try:
+            coms_2026 = pd.read_csv(csv_2026_coms)
+            if not coms_2026.empty:
+                print(f"  Found {len(coms_2026)} comments from 2026")
+                comments_df = pd.concat([comments_df, coms_2026], ignore_index=True)
+                comments_df = comments_df.drop_duplicates(subset='id', keep='last')
+        except (pd.errors.EmptyDataError, FileNotFoundError):
+            pass
+
+    if submissions_df.empty:
+        print("ERROR: No submissions found in data/ folder or CSV files")
+        return pd.DataFrame(), pd.DataFrame()
 
     # Analyze sentiment for submissions
     print("\nAnalyzing sentiment for submissions...")
@@ -60,14 +265,16 @@ def load_and_analyze_data():
     submissions_df['sentiment_category'] = submissions_df['sentiment_score'].apply(categorize_sentiment)
 
     # Analyze sentiment for comments
-    print("\nAnalyzing sentiment for comments...")
-    tqdm.pandas(desc="Comments")
-    comments_df['sentiment_score'] = comments_df['body'].progress_apply(analyze_sentiment)
-    comments_df['sentiment_category'] = comments_df['sentiment_score'].apply(categorize_sentiment)
+    if not comments_df.empty:
+        print("\nAnalyzing sentiment for comments...")
+        tqdm.pandas(desc="Comments")
+        comments_df['sentiment_score'] = comments_df['body'].progress_apply(analyze_sentiment)
+        comments_df['sentiment_category'] = comments_df['sentiment_score'].apply(categorize_sentiment)
 
     # Convert dates to datetime
     submissions_df['created_date'] = pd.to_datetime(submissions_df['created_date'])
-    comments_df['created_date'] = pd.to_datetime(comments_df['created_date'])
+    if not comments_df.empty:
+        comments_df['created_date'] = pd.to_datetime(comments_df['created_date'])
 
     # Add category column for Autism vs ADHD
     autism_subs = ['autism', 'aspergers', 'aspergirls', 'AutisticAdults']
@@ -75,9 +282,10 @@ def load_and_analyze_data():
     submissions_df['category'] = submissions_df['subreddit'].apply(
         lambda x: 'Autism' if x.lower() in autism_set else 'ADHD'
     )
-    comments_df['category'] = comments_df['subreddit'].apply(
-        lambda x: 'Autism' if x.lower() in autism_set else 'ADHD'
-    )
+    if not comments_df.empty:
+        comments_df['category'] = comments_df['subreddit'].apply(
+            lambda x: 'Autism' if x.lower() in autism_set else 'ADHD'
+        )
 
     return submissions_df, comments_df
 
@@ -319,8 +527,8 @@ def main():
 
     # Save analyzed data
     print("\nSaving analyzed data...")
-    submissions_df.to_csv('reddit_submissions_with_sentiment.csv', index=False)
-    comments_df.to_csv('reddit_comments_with_sentiment.csv', index=False)
+    submissions_df.to_csv('reddit_submissions_with_sentiment_2026.csv', index=False)
+    comments_df.to_csv('reddit_comments_with_sentiment_2026.csv', index=False)
     print("Saved analyzed data to CSV files")
 
     # Generate visualizations
@@ -333,8 +541,8 @@ def main():
     print("ANALYSIS COMPLETE!")
     print("="*60)
     print("\nGenerated files:")
-    print("- reddit_submissions_with_sentiment.csv")
-    print("- reddit_comments_with_sentiment.csv")
+    print("- reddit_submissions_with_sentiment_2026.csv")
+    print("- reddit_comments_with_sentiment_2026.csv")
     print("- sentiment_analysis_overview.png")
     print("- sentiment_by_category.png")
     print("- sentiment_by_subreddit.png")

@@ -328,9 +328,12 @@ def _save_data_incrementally(new_submissions, new_comments, submission_cols, com
     """
     Merge new data with existing CSV files and save immediately.
     This ensures data is preserved even if the script is interrupted by a timeout.
+
+    Note: Data is saved to reddit_submissions_2026.csv and reddit_comments_2026.csv
+    to clearly distinguish from the historical seed data in data/*.zst archives.
     """
-    existing_submissions = _load_existing('reddit_submissions.csv', submission_cols)
-    existing_comments = _load_existing('reddit_comments.csv', comment_cols)
+    existing_submissions = _load_existing('reddit_submissions_2026.csv', submission_cols)
+    existing_comments = _load_existing('reddit_comments_2026.csv', comment_cols)
 
     new_submissions_df = (pd.DataFrame(new_submissions, columns=submission_cols)
                           .drop_duplicates(subset='id') if new_submissions
@@ -354,8 +357,8 @@ def _save_data_incrementally(new_submissions, new_comments, submission_cols, com
     comments_df = (pd.concat([existing_comments, new_comments_df], ignore_index=True)
                    .drop_duplicates(subset='id'))
 
-    submissions_df.to_csv('reddit_submissions.csv', index=False)
-    comments_df.to_csv('reddit_comments.csv', index=False)
+    submissions_df.to_csv('reddit_submissions_2026.csv', index=False)
+    comments_df.to_csv('reddit_comments_2026.csv', index=False)
 
     return truly_new_subs, truly_new_coms, len(submissions_df), len(comments_df)
 
@@ -406,7 +409,7 @@ def main():
         if not args.seed:
             # --- Comments (fetch per post) ---
             # Load existing comments to check what we already have
-            existing_comments = _load_existing('reddit_comments.csv', COMMENT_COLS)
+            existing_comments = _load_existing('reddit_comments_2026.csv', COMMENT_COLS)
             existing_comment_links = {}
             if not existing_comments.empty:
                 # Build a map of link_id -> count of comments we have
@@ -469,8 +472,8 @@ def main():
         print(f"  → Saved to CSV (total: {total_subs} submissions, {total_coms} comments)")
 
     # --- Load final saved data for summary ---
-    submissions_df = _load_existing('reddit_submissions.csv', SUBMISSION_COLS)
-    comments_df = _load_existing('reddit_comments.csv', COMMENT_COLS)
+    submissions_df = _load_existing('reddit_submissions_2026.csv', SUBMISSION_COLS)
+    comments_df = _load_existing('reddit_comments_2026.csv', COMMENT_COLS)
 
     if submissions_df.empty:
         print("\nWARNING: No submissions were collected.")
@@ -487,7 +490,7 @@ def main():
     print(f"Total submissions (all)  : {len(submissions_df)}")
     print(f"Total comments (all)     : {len(comments_df)}")
     print(f"Date range (posts)       : {submissions_df['created_date'].min()} → {submissions_df['created_date'].max()}")
-    print(f"\nFiles written: reddit_submissions.csv  reddit_comments.csv")
+    print(f"\nFiles written: reddit_submissions_2026.csv  reddit_comments_2026.csv")
 
     print("\nSubmissions by subreddit:")
     print(submissions_df['subreddit'].value_counts().to_string())

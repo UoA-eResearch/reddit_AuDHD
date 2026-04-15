@@ -10,10 +10,10 @@ from datetime import datetime
 
 def load_data():
     """Load the analyzed data files."""
-    submissions_df = pd.read_csv('reddit_submissions_with_sentiment.csv')
+    submissions_df = pd.read_csv('reddit_submissions_with_sentiment_2026.csv')
 
     try:
-        comments_df = pd.read_csv('reddit_comments_with_sentiment.csv')
+        comments_df = pd.read_csv('reddit_comments_with_sentiment_2026.csv')
     except (pd.errors.EmptyDataError, FileNotFoundError):
         comments_df = pd.DataFrame()
 
