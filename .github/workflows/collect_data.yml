@@ -101,7 +101,7 @@ jobs:
       - name: Download and import seed datasets
         run: |
           sudo apt-get install -y aria2
-          pip install bencode.py zstandard
+          pip install zstandard
           if [ "${{ github.event.inputs.force_seed_download }}" = "true" ]; then
             python import_seed_data.py --force
           else
