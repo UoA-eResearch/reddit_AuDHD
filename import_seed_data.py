@@ -215,6 +215,33 @@ def download_torrent(torrent_path: Path, dest_dir: Path, indices: list) -> bool:
     return result.returncode == 0
 
 
+def remove_partial_downloads(seed_dir: Path) -> int:
+    """
+    Remove partially downloaded files for subreddits not in SUBREDDITS.
+
+    aria2c may partially download adjacent files due to shared torrent pieces.
+    This function removes any .zst files that are not for our tracked subreddits.
+
+    Returns the number of files removed.
+    """
+    sub_lower = {s.lower() for s in SUBREDDITS}
+    removed_count = 0
+
+    for zst_file in seed_dir.rglob("*.zst"):
+        stem = zst_file.stem  # e.g. "autism_submissions" or "autism_comments"
+        if "_" not in stem:
+            continue
+        sub_name = stem.rsplit("_", 1)[0]
+
+        # Remove files for subreddits we're not tracking
+        if sub_name.lower() not in sub_lower:
+            print(f"  Removing partially downloaded file: {zst_file.name}")
+            zst_file.unlink()
+            removed_count += 1
+
+    return removed_count
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -293,6 +320,14 @@ def main():
     if not download_torrent(torrent_path, seed_dir, indices):
         print("aria2c download failed.", file=sys.stderr)
         sys.exit(1)
+
+    # Remove partially downloaded adjacent files.
+    print("Cleaning up partially downloaded files ...")
+    removed = remove_partial_downloads(seed_dir)
+    if removed > 0:
+        print(f"  Removed {removed} partially downloaded file(s)")
+    else:
+        print("  No partial downloads to remove")
 
     # Process downloaded .zst archives.
     total_subs = 0
