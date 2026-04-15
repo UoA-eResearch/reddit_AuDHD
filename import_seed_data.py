@@ -11,12 +11,14 @@ Usage (called by GitHub Actions, or manually):
 """
 
 import argparse
+import bencode
 import csv
 import hashlib
 import json
 import os
 import subprocess
 import sys
+import urllib.request
 import zstandard
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,11 +32,9 @@ SUBREDDITS = [
     "ADHD", "ADHDmemes", "adhdwomen", "adhd_anxiety",
 ]
 
-MAGNET_URI = (
-    "magnet:?xt=urn:btih:3e3f64dee22dc304cdd2546254ca1f8e8ae542b4"
-    "&tr=https%3A%2F%2Facademictorrents.com%2Fannounce.php"
-    "&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969"
-    "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
+TORRENT_URL = (
+    "https://academictorrents.com/download/"
+    "3e3f64dee22dc304cdd2546254ca1f8e8ae542b4.torrent"
 )
 
 SUBMISSION_COLS = [
@@ -174,15 +174,43 @@ def import_comments(zst_path: Path, out_csv: Path) -> int:
 # Torrent helpers
 # ---------------------------------------------------------------------------
 
-def download_torrent(magnet_uri: str, dest_dir: Path) -> bool:
-    """Download files from the torrent using aria2c with a magnet link."""
+def find_torrent_file_indices(torrent_path: Path) -> list:
+    """
+    Parse the .torrent file and return the 1-based file indices for each
+    {subreddit}_submissions.zst and {subreddit}_comments.zst file.
+    """
+    with open(torrent_path, "rb") as f:
+        meta = bencode.decode(f.read())
+
+    info = meta.get("info", meta.get(b"info", {}))
+    files = info.get("files", info.get(b"files", []))
+
+    sub_lower = {s.lower() for s in SUBREDDITS}
+    indices = []
+    for i, finfo in enumerate(files, 1):
+        path_parts = finfo.get("path", finfo.get(b"path", []))
+        filename = path_parts[-1] if path_parts else ""
+        if isinstance(filename, bytes):
+            filename = filename.decode("utf-8", errors="replace")
+        stem = filename.removesuffix(".zst")
+        # Files are named "{subreddit}_submissions" or "{subreddit}_comments"
+        sub_name = stem.rsplit("_", 1)[0] if "_" in stem else stem
+        if sub_name.lower() in sub_lower:
+            indices.append(i)
+    return indices
+
+
+def download_torrent(torrent_path: Path, dest_dir: Path, indices: list) -> bool:
+    """Download selected files from the torrent using aria2c."""
     cmd = [
         "aria2c",
         "--seed-time=0",
         "--file-allocation=none",
         f"--dir={dest_dir}",
-        magnet_uri,
     ]
+    if indices:
+        cmd.append(f"--select-file={','.join(str(i) for i in indices)}")
+    cmd.append(str(torrent_path))
     result = subprocess.run(cmd)
     return result.returncode == 0
 
@@ -194,6 +222,10 @@ def download_torrent(magnet_uri: str, dest_dir: Path) -> bool:
 def main():
     parser = argparse.ArgumentParser(
         description="Import seed datasets from the redarcs torrent."
+    )
+    parser.add_argument(
+        "--torrent-file", default="/tmp/redarcs.torrent",
+        help="Path where the .torrent file is (or will be) stored.",
     )
     parser.add_argument(
         "--seed-dir", default="/tmp/seed",
@@ -213,6 +245,7 @@ def main():
 
     subs_csv = Path(args.submissions_csv)
     coms_csv = Path(args.comments_csv)
+    torrent_path = Path(args.torrent_file)
     seed_dir = Path(args.seed_dir)
     seed_dir.mkdir(parents=True, exist_ok=True)
 
@@ -227,9 +260,29 @@ def main():
             )
             return
 
-    # Download via aria2c using magnet link.
-    print(f"Starting torrent download via aria2c (magnet link) ...")
-    if not download_torrent(MAGNET_URI, seed_dir):
+    # Download the .torrent file if not already present.
+    if not torrent_path.exists():
+        print(f"Downloading torrent file from {TORRENT_URL} ...")
+        # Use a custom user agent to avoid 403 errors
+        req = urllib.request.Request(
+            TORRENT_URL,
+            headers={'User-Agent': 'python:reddit_audhd:v1.0'}
+        )
+        with urllib.request.urlopen(req) as response, open(torrent_path, 'wb') as out_file:
+            out_file.write(response.read())
+        print(f"Torrent file saved to {torrent_path}")
+
+    # Identify which files in the torrent we need.
+    print("Parsing torrent file for relevant file indices ...")
+    indices = find_torrent_file_indices(torrent_path)
+    if indices:
+        print(f"  Will download {len(indices)} file(s): indices {indices}")
+    else:
+        print("  Could not determine file indices; all files will be considered.")
+
+    # Download via aria2c.
+    print("Starting torrent download via aria2c ...")
+    if not download_torrent(torrent_path, seed_dir, indices):
         print("aria2c download failed.", file=sys.stderr)
         sys.exit(1)
 
