@@ -34,12 +34,12 @@ jobs:
         id: test_connection
         run: |
           echo "Testing direct connection to Reddit API..."
-          if timeout 30 python3 -c "
+          if timeout 30 python3 - <<'PY'
 import requests
 try:
     response = requests.get('https://www.reddit.com/r/test.json',
-                           headers={'User-Agent': 'python:test:v1.0'},
-                           timeout=20)
+                            headers={'User-Agent': 'python:test:v1.0'},
+                            timeout=20)
     if response.status_code == 200:
         print('Direct connection successful')
         exit(0)
@@ -49,7 +49,8 @@ try:
 except Exception as e:
     print(f'Direct connection failed: {e}')
     exit(1)
-          "; then
+PY
+          then
             echo "connection=direct" >> "$GITHUB_OUTPUT"
             echo "✓ Direct connection to Reddit works - Tor not needed"
           else
