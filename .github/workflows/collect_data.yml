@@ -73,35 +73,54 @@ jobs:
       - name: Count rows before collection
         id: count_before
         run: |
-          # Count existing rows before collection (excluding header)
-          SUBS_BEFORE=0
-          COMS_BEFORE=0
-          if [ -f reddit_submissions.csv ]; then
-            LINES=$(wc -l < reddit_submissions.csv)
-            # Only subtract 1 if file has at least 1 line (header)
-            if [ "$LINES" -gt 0 ]; then
-              SUBS_BEFORE=$((LINES - 1))
-            fi
-          fi
-          if [ -f reddit_comments.csv ]; then
-            LINES=$(wc -l < reddit_comments.csv)
-            # Only subtract 1 if file has at least 1 line (header)
-            if [ "$LINES" -gt 0 ]; then
-              COMS_BEFORE=$((LINES - 1))
-            fi
-          fi
+          # Count existing items in zst archives before collection
+          python3 << 'EOF'
+          import json
+          import zstandard
+          from pathlib import Path
 
-          # Ensure non-negative values
-          if [ $SUBS_BEFORE -lt 0 ]; then SUBS_BEFORE=0; fi
-          if [ $COMS_BEFORE -lt 0 ]; then COMS_BEFORE=0; fi
+          def count_zst_items(data_dir, subreddits):
+              total_subs = 0
+              total_coms = 0
+              for subreddit in subreddits:
+                  for kind in ['submissions', 'comments']:
+                      zst_file = data_dir / f"{subreddit}_{kind}.zst"
+                      if not zst_file.exists():
+                          continue
 
-          echo "subs_before=$SUBS_BEFORE" >> "$GITHUB_OUTPUT"
-          echo "coms_before=$COMS_BEFORE" >> "$GITHUB_OUTPUT"
+                      dctx = zstandard.ZstdDecompressor()
+                      count = 0
+                      with open(zst_file, "rb") as fh, dctx.stream_reader(fh) as reader:
+                          buf = b""
+                          while True:
+                              chunk = reader.read(131_072)
+                              if not chunk:
+                                  break
+                              buf += chunk
+                              lines = buf.split(b"\n")
+                              buf = lines[-1]
+                              count += len([l for l in lines[:-1] if l.strip()])
+                          if buf.strip():
+                              count += 1
+
+                      if kind == 'submissions':
+                          total_subs += count
+                      else:
+                          total_coms += count
+              return total_subs, total_coms
+
+          subreddits = ["autism", "aspergers", "aspergirls", "AutisticAdults",
+                        "ADHD", "ADHDmemes", "adhdwomen", "adhd_anxiety"]
+          data_dir = Path("data")
+          subs, coms = count_zst_items(data_dir, subreddits)
+
+          with open("$GITHUB_OUTPUT", "a") as f:
+              f.write(f"subs_before={subs}\n")
+              f.write(f"coms_before={coms}\n")
+          EOF
 
       - name: Download and import seed datasets
         run: |
-          sudo apt-get install -y aria2
-          pip install bencode.py zstandard
           if [ "${{ github.event.inputs.force_seed_download }}" = "true" ]; then
             python import_seed_data.py --force
           else
@@ -126,48 +145,68 @@ jobs:
         id: count_after
         if: always()
         run: |
-          # Count rows after collection (excluding header)
-          SUBS_AFTER=0
-          COMS_AFTER=0
-          if [ -f reddit_submissions.csv ]; then
-            LINES=$(wc -l < reddit_submissions.csv)
-            # Only subtract 1 if file has at least 1 line (header)
-            if [ "$LINES" -gt 0 ]; then
-              SUBS_AFTER=$((LINES - 1))
-            fi
-          fi
-          if [ -f reddit_comments.csv ]; then
-            LINES=$(wc -l < reddit_comments.csv)
-            # Only subtract 1 if file has at least 1 line (header)
-            if [ "$LINES" -gt 0 ]; then
-              COMS_AFTER=$((LINES - 1))
-            fi
-          fi
+          # Count items in zst archives after collection
+          python3 << 'EOF'
+          import json
+          import zstandard
+          from pathlib import Path
 
-          # Ensure non-negative values
-          if [ $SUBS_AFTER -lt 0 ]; then SUBS_AFTER=0; fi
-          if [ $COMS_AFTER -lt 0 ]; then COMS_AFTER=0; fi
+          def count_zst_items(data_dir, subreddits):
+              total_subs = 0
+              total_coms = 0
+              for subreddit in subreddits:
+                  for kind in ['submissions', 'comments']:
+                      zst_file = data_dir / f"{subreddit}_{kind}.zst"
+                      if not zst_file.exists():
+                          continue
 
-          # Calculate new counts
-          NEW_SUBS=$((SUBS_AFTER - ${{ steps.count_before.outputs.subs_before }}))
-          NEW_COMS=$((COMS_AFTER - ${{ steps.count_before.outputs.coms_before }}))
+                      dctx = zstandard.ZstdDecompressor()
+                      count = 0
+                      with open(zst_file, "rb") as fh, dctx.stream_reader(fh) as reader:
+                          buf = b""
+                          while True:
+                              chunk = reader.read(131_072)
+                              if not chunk:
+                                  break
+                              buf += chunk
+                              lines = buf.split(b"\n")
+                              buf = lines[-1]
+                              count += len([l for l in lines[:-1] if l.strip()])
+                          if buf.strip():
+                              count += 1
 
-          # Ensure non-negative deltas
-          if [ $NEW_SUBS -lt 0 ]; then NEW_SUBS=0; fi
-          if [ $NEW_COMS -lt 0 ]; then NEW_COMS=0; fi
+                      if kind == 'submissions':
+                          total_subs += count
+                      else:
+                          total_coms += count
+              return total_subs, total_coms
 
-          echo "new_submissions=$NEW_SUBS" >> "$GITHUB_OUTPUT"
-          echo "new_comments=$NEW_COMS" >> "$GITHUB_OUTPUT"
+          subreddits = ["autism", "aspergers", "aspergirls", "AutisticAdults",
+                        "ADHD", "ADHDmemes", "adhdwomen", "adhd_anxiety"]
+          data_dir = Path("data")
+          subs, coms = count_zst_items(data_dir, subreddits)
 
-      # Only proceed with analysis if the collection produced real rows.
+          subs_before = ${{ steps.count_before.outputs.subs_before }}
+          coms_before = ${{ steps.count_before.outputs.coms_before }}
+
+          new_subs = max(0, subs - subs_before)
+          new_coms = max(0, coms - coms_before)
+
+          with open("$GITHUB_OUTPUT", "a") as f:
+              f.write(f"new_submissions={new_subs}\n")
+              f.write(f"new_comments={new_coms}\n")
+          EOF
+
+      # Only proceed with analysis if the collection produced real items.
       - name: Check if data was collected
         id: check_data
         run: |
-          if [ -s reddit_submissions.csv ] && [ "$(wc -l < reddit_submissions.csv)" -gt 1 ]; then
+          # Check if we have any zst archives
+          if ls data/*_submissions.zst 1> /dev/null 2>&1; then
             echo "data_collected=true" >> "$GITHUB_OUTPUT"
           else
             echo "data_collected=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No submissions collected – connection may have failed or Reddit rejected the request."
+            echo "::warning::No data archives found – connection may have failed or Reddit rejected the request."
           fi
 
       - name: Run sentiment analysis
@@ -184,8 +223,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add \
-            reddit_submissions.csv \
-            reddit_comments.csv \
+            data/*.zst \
             reddit_submissions_with_sentiment.csv \
             reddit_comments_with_sentiment.csv \
             sentiment_analysis_overview.png \
