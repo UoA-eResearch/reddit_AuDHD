@@ -2,8 +2,9 @@ name: Collect Reddit Data
 
 # Run weekly (Sunday at 00:00 UTC) and allow manual triggers.
 #
-# Traffic is routed through Tor (via torsocks) so that Reddit's blocks on
-# GitHub-hosted datacenter IPs are bypassed.
+# The workflow first tests if Reddit is directly accessible from the GitHub Actions
+# runner. If the direct connection fails (Reddit blocks GitHub datacenter IPs),
+# traffic is automatically routed through Tor (via torsocks) to bypass the blocks.
 on:
   schedule:
     - cron: '0 0 * * 0'   # Every Sunday at midnight UTC
@@ -29,10 +30,39 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Test direct connection to Reddit
+        id: test_connection
+        run: |
+          echo "Testing direct connection to Reddit API..."
+          if timeout 30 python3 -c "
+import requests
+try:
+    response = requests.get('https://www.reddit.com/r/test.json',
+                           headers={'User-Agent': 'python:test:v1.0'},
+                           timeout=20)
+    if response.status_code == 200:
+        print('Direct connection successful')
+        exit(0)
+    else:
+        print(f'Direct connection failed with status {response.status_code}')
+        exit(1)
+except Exception as e:
+    print(f'Direct connection failed: {e}')
+    exit(1)
+          "; then
+            echo "connection=direct" >> "$GITHUB_OUTPUT"
+            echo "✓ Direct connection to Reddit works - Tor not needed"
+          else
+            echo "connection=tor" >> "$GITHUB_OUTPUT"
+            echo "✗ Direct connection failed - will use Tor"
+          fi
+
       - name: Install Tor and torsocks
+        if: steps.test_connection.outputs.connection == 'tor'
         run: sudo apt-get install -y tor torsocks
 
       - name: Start Tor and wait for bootstrap
+        if: steps.test_connection.outputs.connection == 'tor'
         run: |
           sudo service tor@default start || sudo systemctl start tor@default
           echo "Waiting for Tor to bootstrap..."
@@ -75,10 +105,16 @@ jobs:
           echo "subs_before=$SUBS_BEFORE" >> "$GITHUB_OUTPUT"
           echo "coms_before=$COMS_BEFORE" >> "$GITHUB_OUTPUT"
 
-      - name: Collect Reddit data (via Tor)
+      - name: Collect Reddit data
         run: |
-          # Run collection (capture output for debugging but don't rely on it)
-          timeout 340m torsocks python collect_reddit_data.py | tee /tmp/collect_output.txt || true
+          # Run collection via torsocks if needed, otherwise direct connection
+          if [ "${{ steps.test_connection.outputs.connection }}" = "tor" ]; then
+            echo "Using Tor connection..."
+            timeout 340m torsocks python collect_reddit_data.py | tee /tmp/collect_output.txt || true
+          else
+            echo "Using direct connection..."
+            timeout 340m python collect_reddit_data.py | tee /tmp/collect_output.txt || true
+          fi
         timeout-minutes: 350
         continue-on-error: true
 
@@ -127,7 +163,7 @@ jobs:
             echo "data_collected=true" >> "$GITHUB_OUTPUT"
           else
             echo "data_collected=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No submissions collected – Tor may not have bootstrapped or Reddit rejected the exit node."
+            echo "::warning::No submissions collected – connection may have failed or Reddit rejected the request."
           fi
 
       - name: Run sentiment analysis
