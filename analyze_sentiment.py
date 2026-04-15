@@ -11,6 +11,7 @@ Combines both sources, deduplicates by ID, and performs sentiment analysis.
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -261,18 +262,22 @@ def load_and_analyze_data():
     print("\nAnalyzing sentiment for submissions...")
     # Combine title and selftext for submissions
     submissions_df['text'] = submissions_df['title'].fillna('') + ' ' + submissions_df['selftext'].fillna('')
+    _n_sub = len(submissions_df)
+    _chunksize_sub = max(1, _n_sub // (os.cpu_count() or 1))
     submissions_df['sentiment_score'] = process_map(
-        analyze_sentiment, submissions_df['text'].tolist(),
-        desc="Submissions", chunksize=1000,
+        analyze_sentiment, submissions_df['text'],
+        desc="Submissions", chunksize=_chunksize_sub,
     )
     submissions_df['sentiment_category'] = submissions_df['sentiment_score'].apply(categorize_sentiment)
 
     # Analyze sentiment for comments
     if not comments_df.empty:
         print("\nAnalyzing sentiment for comments...")
+        _n_com = len(comments_df)
+        _chunksize_com = max(1, _n_com // (os.cpu_count() or 1))
         comments_df['sentiment_score'] = process_map(
-            analyze_sentiment, comments_df['body'].tolist(),
-            desc="Comments", chunksize=1000,
+            analyze_sentiment, comments_df['body'],
+            desc="Comments", chunksize=_chunksize_com,
         )
         comments_df['sentiment_category'] = comments_df['sentiment_score'].apply(categorize_sentiment)
 
