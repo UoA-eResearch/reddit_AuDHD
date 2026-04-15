@@ -20,6 +20,7 @@ import seaborn as sns
 import zstandard
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from tqdm import tqdm
+from tqdm.contrib.concurrent import process_map
 
 # LFS pointer files start with this prefix
 _LFS_POINTER_PREFIX = b"version https://git-lfs.github.com"
@@ -260,15 +261,19 @@ def load_and_analyze_data():
     print("\nAnalyzing sentiment for submissions...")
     # Combine title and selftext for submissions
     submissions_df['text'] = submissions_df['title'].fillna('') + ' ' + submissions_df['selftext'].fillna('')
-    tqdm.pandas(desc="Submissions")
-    submissions_df['sentiment_score'] = submissions_df['text'].progress_apply(analyze_sentiment)
+    submissions_df['sentiment_score'] = process_map(
+        analyze_sentiment, submissions_df['text'].tolist(),
+        desc="Submissions", chunksize=1000,
+    )
     submissions_df['sentiment_category'] = submissions_df['sentiment_score'].apply(categorize_sentiment)
 
     # Analyze sentiment for comments
     if not comments_df.empty:
         print("\nAnalyzing sentiment for comments...")
-        tqdm.pandas(desc="Comments")
-        comments_df['sentiment_score'] = comments_df['body'].progress_apply(analyze_sentiment)
+        comments_df['sentiment_score'] = process_map(
+            analyze_sentiment, comments_df['body'].tolist(),
+            desc="Comments", chunksize=1000,
+        )
         comments_df['sentiment_category'] = comments_df['sentiment_score'].apply(categorize_sentiment)
 
     # Convert dates to datetime
