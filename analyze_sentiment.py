@@ -11,6 +11,7 @@ Combines both sources, deduplicates by ID, and performs sentiment analysis.
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +21,7 @@ import seaborn as sns
 import zstandard
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from tqdm import tqdm
+from tqdm.contrib.concurrent import process_map
 
 # LFS pointer files start with this prefix
 _LFS_POINTER_PREFIX = b"version https://git-lfs.github.com"
@@ -260,15 +262,24 @@ def load_and_analyze_data():
     print("\nAnalyzing sentiment for submissions...")
     # Combine title and selftext for submissions
     submissions_df['text'] = submissions_df['title'].fillna('') + ' ' + submissions_df['selftext'].fillna('')
-    tqdm.pandas(desc="Submissions")
-    submissions_df['sentiment_score'] = submissions_df['text'].progress_apply(analyze_sentiment)
+    _n_workers = os.cpu_count() or 1
+    _n_sub = len(submissions_df)
+    _chunksize_sub = max(1, _n_sub // _n_workers)
+    submissions_df['sentiment_score'] = process_map(
+        analyze_sentiment, submissions_df['text'],
+        desc="Submissions", chunksize=_chunksize_sub, max_workers=_n_workers,
+    )
     submissions_df['sentiment_category'] = submissions_df['sentiment_score'].apply(categorize_sentiment)
 
     # Analyze sentiment for comments
     if not comments_df.empty:
         print("\nAnalyzing sentiment for comments...")
-        tqdm.pandas(desc="Comments")
-        comments_df['sentiment_score'] = comments_df['body'].progress_apply(analyze_sentiment)
+        _n_com = len(comments_df)
+        _chunksize_com = max(1, _n_com // _n_workers)
+        comments_df['sentiment_score'] = process_map(
+            analyze_sentiment, comments_df['body'],
+            desc="Comments", chunksize=_chunksize_com, max_workers=_n_workers,
+        )
         comments_df['sentiment_category'] = comments_df['sentiment_score'].apply(categorize_sentiment)
 
     # Convert dates to datetime
