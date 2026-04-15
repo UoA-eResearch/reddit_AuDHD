@@ -263,7 +263,13 @@ def main():
     # Download the .torrent file if not already present.
     if not torrent_path.exists():
         print(f"Downloading torrent file from {TORRENT_URL} ...")
-        urllib.request.urlretrieve(TORRENT_URL, torrent_path)
+        # Use a custom user agent to avoid 403 errors
+        req = urllib.request.Request(
+            TORRENT_URL,
+            headers={'User-Agent': 'python:reddit_audhd:v1.0'}
+        )
+        with urllib.request.urlopen(req) as response, open(torrent_path, 'wb') as out_file:
+            out_file.write(response.read())
         print(f"Torrent file saved to {torrent_path}")
 
     # Identify which files in the torrent we need.
@@ -272,7 +278,15 @@ def main():
     if indices:
         print(f"  Will download {len(indices)} file(s): indices {indices}")
     else:
-        print("  Could not determine file indices; all files will be considered.")
+        print(
+            "  ERROR: Could not determine file indices for tracked subreddits.",
+            file=sys.stderr
+        )
+        print(
+            f"  Expected files for subreddits: {', '.join(SUBREDDITS)}",
+            file=sys.stderr
+        )
+        sys.exit(1)
 
     # Download via aria2c.
     print("Starting torrent download via aria2c ...")
