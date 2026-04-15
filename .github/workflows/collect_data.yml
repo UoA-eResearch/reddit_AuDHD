@@ -176,7 +176,32 @@ jobs:
 
       - name: Run sentiment analysis
         if: steps.check_data.outputs.data_collected == 'true'
-        run: python analyze_sentiment.py
+        run: |
+          # Start background resource monitor – logs every ~30 s while analysis runs.
+          (
+            while true; do
+              TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+              # CPU%: take a 1-second vmstat sample and compute 100-idle
+              ID=$(vmstat 1 2 2>/dev/null | tail -1 | awk '{print $15}')
+              CPU=$((100 - ${ID:-0}))
+              # RAM: kB from /proc/meminfo → GiB and %
+              MT=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+              MA=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
+              MU=$((MT - MA))
+              RAM_PCT=$((MU * 100 / MT))
+              RAM_USED=$(awk "BEGIN{printf \"%.2f\", $MU/1048576}")
+              RAM_TOTAL=$(awk "BEGIN{printf \"%.2f\", $MT/1048576}")
+              # Disk: root filesystem in GiB
+              read -r _ DISK_TOTAL DISK_USED _ DISK_PCT _ < <(df -BG / | tail -1)
+              echo "[resource-monitor $TS] CPU: ${CPU}% | RAM: ${RAM_USED}GiB / ${RAM_TOTAL}GiB (${RAM_PCT}%) | Disk: ${DISK_USED} / ${DISK_TOTAL} (${DISK_PCT})"
+              sleep 28
+            done
+          ) &
+          MONITOR_PID=$!
+          python analyze_sentiment.py
+          EXIT_CODE=$?
+          kill $MONITOR_PID 2>/dev/null || true
+          exit $EXIT_CODE
 
       - name: Update README statistics
         if: steps.check_data.outputs.data_collected == 'true'
