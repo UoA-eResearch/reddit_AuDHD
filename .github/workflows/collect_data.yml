@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -90,31 +92,11 @@ jobs:
           echo "subs_before=$SUBS_BEFORE" >> "$GITHUB_OUTPUT"
           echo "coms_before=$COMS_BEFORE" >> "$GITHUB_OUTPUT"
 
-      - name: Download seed datasets from the-eye.eu
+      - name: Download and import seed datasets
         run: |
-          # Download Reddit archives from the-eye.eu for seeding
-          # Note: the-eye.eu has an invalid SSL cert, so we use --insecure
-          echo "Checking for seed datasets from the-eye.eu/redarcs..."
-
-          # Subreddits to download
-          SUBREDDITS="autism aspergers aspergirls AutisticAdults ADHD ADHDmemes adhdwomen adhd_anxiety"
-
-          for sub in $SUBREDDITS; do
-            echo "Looking for archive of r/$sub..."
-            # Try to download the archive (if it exists)
-            # Using --fail to skip if not found, --insecure for invalid SSL cert
-            if curl -f -L --insecure -A 'Mozilla/5.0' \
-                "https://the-eye.eu/redarcs/files/$sub.zst" \
-                -o "/tmp/${sub}.zst" 2>/dev/null; then
-              echo "  Downloaded archive for r/$sub"
-              # TODO: Extract and merge with existing data
-              # For now, just note that we found it
-            else
-              echo "  No archive found for r/$sub (or download failed)"
-            fi
-          done
-
-          echo "Seed dataset check complete"
+          sudo apt-get install -y aria2
+          pip install bencode.py zstandard
+          python import_seed_data.py
         continue-on-error: true
 
       - name: Collect Reddit data
