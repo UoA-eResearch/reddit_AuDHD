@@ -183,14 +183,18 @@ jobs:
               TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
               # CPU%: take a 1-second vmstat sample and compute 100-idle
               ID=$(vmstat 1 2 2>/dev/null | tail -1 | awk '{print $15}')
-              CPU=$((100 - ${ID:-0}))
+              if [[ "$ID" =~ ^[0-9]+$ ]]; then CPU=$((100 - ID)); else CPU="N/A"; fi
               # RAM: kB from /proc/meminfo → GiB and %
               MT=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
               MA=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
-              MU=$((MT - MA))
-              RAM_PCT=$((MU * 100 / MT))
-              RAM_USED=$(awk "BEGIN{printf \"%.2f\", $MU/1048576}")
-              RAM_TOTAL=$(awk "BEGIN{printf \"%.2f\", $MT/1048576}")
+              if [[ "$MT" =~ ^[0-9]+$ ]] && [[ "$MA" =~ ^[0-9]+$ ]] && (( MT > 0 )); then
+                MU=$((MT - MA))
+                RAM_PCT=$((MU * 100 / MT))
+                RAM_USED=$(awk "BEGIN{printf \"%.2f\", $MU/1048576}")
+                RAM_TOTAL=$(awk "BEGIN{printf \"%.2f\", $MT/1048576}")
+              else
+                RAM_PCT="N/A"; RAM_USED="N/A"; RAM_TOTAL="N/A"
+              fi
               # Disk: root filesystem in GiB
               read -r _ DISK_TOTAL DISK_USED _ DISK_PCT _ < <(df -BG / | tail -1)
               echo "[resource-monitor $TS] CPU: ${CPU}% | RAM: ${RAM_USED}GiB / ${RAM_TOTAL}GiB (${RAM_PCT}%) | Disk: ${DISK_USED} / ${DISK_TOTAL} (${DISK_PCT})"
