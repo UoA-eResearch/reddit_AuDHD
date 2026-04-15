@@ -135,7 +135,8 @@ def load_submissions_from_zst(data_dir: Path):
     to match the schema used by collect_reddit_data.py / import_seed_data.py.
     Records with a missing or empty id are skipped.
 
-    Processes one zst file at a time, concatenating batches per file to avoid OOM.
+    Processes batches incrementally to avoid OOM: concatenates every few batches
+    instead of accumulating all batches from a file in memory.
     """
     columns = [
         'id', 'subreddit', 'title', 'selftext', 'author_hash', 'score',
@@ -169,12 +170,19 @@ def load_submissions_from_zst(data_dir: Path):
 
         records = (r for post in _iter_ndjson_zst(zst_file)
                    if (r := _submission_record(post)) is not None)
-        # Collect batches for this file, then concat and clear to manage memory
-        file_frames = list(_dataframe_batches(records, columns))
-        if file_frames:
-            file_df = pd.concat(file_frames, ignore_index=True)
-            all_frames.append(file_df)
-            del file_frames  # Release memory from intermediate list
+
+        # Concatenate every 5 batches to avoid accumulating too many in memory
+        batch_group = []
+        for batch_df in _dataframe_batches(records, columns):
+            batch_group.append(batch_df)
+            if len(batch_group) >= 5:
+                merged = pd.concat(batch_group, ignore_index=True)
+                all_frames.append(merged)
+                batch_group.clear()
+        # Handle remaining batches
+        if batch_group:
+            merged = pd.concat(batch_group, ignore_index=True)
+            all_frames.append(merged)
 
     if not all_frames:
         return pd.DataFrame(columns=columns)
@@ -188,7 +196,8 @@ def load_comments_from_zst(data_dir: Path):
     to match the schema used by collect_reddit_data.py / import_seed_data.py.
     Records with a missing or empty id are skipped.
 
-    Processes one zst file at a time, concatenating batches per file to avoid OOM.
+    Processes batches incrementally to avoid OOM: concatenates every few batches
+    instead of accumulating all batches from a file in memory.
     """
     columns = [
         'id', 'subreddit', 'body', 'author_hash', 'score',
@@ -217,12 +226,19 @@ def load_comments_from_zst(data_dir: Path):
 
         records = (r for comment in _iter_ndjson_zst(zst_file)
                    if (r := _comment_record(comment)) is not None)
-        # Collect batches for this file, then concat and clear to manage memory
-        file_frames = list(_dataframe_batches(records, columns))
-        if file_frames:
-            file_df = pd.concat(file_frames, ignore_index=True)
-            all_frames.append(file_df)
-            del file_frames  # Release memory from intermediate list
+
+        # Concatenate every 5 batches to avoid accumulating too many in memory
+        batch_group = []
+        for batch_df in _dataframe_batches(records, columns):
+            batch_group.append(batch_df)
+            if len(batch_group) >= 5:
+                merged = pd.concat(batch_group, ignore_index=True)
+                all_frames.append(merged)
+                batch_group.clear()
+        # Handle remaining batches
+        if batch_group:
+            merged = pd.concat(batch_group, ignore_index=True)
+            all_frames.append(merged)
 
     if not all_frames:
         return pd.DataFrame(columns=columns)
