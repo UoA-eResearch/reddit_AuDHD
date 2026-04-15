@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
 Script to analyze sentiment of Reddit posts and comments about Autism and ADHD.
-Reads data directly from zst-compressed archives in the data/ folder.
+
+Data sources:
+1. Historical seed data: zst-compressed archives in data/ folder (from academictorrents.com)
+2. 2026 data: CSV files (reddit_submissions_2026.csv, reddit_comments_2026.csv)
+
+Combines both sources, deduplicates by ID, and performs sentiment analysis.
 """
 
 import json
@@ -113,18 +118,45 @@ def load_comments_from_zst(data_dir: Path):
 
 def load_and_analyze_data():
     """
-    Load data from zst archives and perform sentiment analysis.
+    Load data from zst archives (historical seed data) and 2026 CSV files (new data).
+    Combines both sources and deduplicates by ID.
     """
     data_dir = Path("data")
 
-    print("Loading submissions from zst archives...")
+    print("Loading submissions from zst archives (historical seed data)...")
     submissions_df = load_submissions_from_zst(data_dir)
 
-    print("\nLoading comments from zst archives...")
+    print("\nLoading comments from zst archives (historical seed data)...")
     comments_df = load_comments_from_zst(data_dir)
 
+    # Also load 2026 data from CSV files if they exist
+    csv_2026_subs = Path("reddit_submissions_2026.csv")
+    csv_2026_coms = Path("reddit_comments_2026.csv")
+
+    if csv_2026_subs.exists():
+        print("\nLoading 2026 submissions from CSV...")
+        try:
+            subs_2026 = pd.read_csv(csv_2026_subs)
+            if not subs_2026.empty:
+                print(f"  Found {len(subs_2026)} submissions from 2026")
+                submissions_df = pd.concat([submissions_df, subs_2026], ignore_index=True)
+                submissions_df = submissions_df.drop_duplicates(subset='id', keep='last')
+        except (pd.errors.EmptyDataError, FileNotFoundError):
+            pass
+
+    if csv_2026_coms.exists():
+        print("\nLoading 2026 comments from CSV...")
+        try:
+            coms_2026 = pd.read_csv(csv_2026_coms)
+            if not coms_2026.empty:
+                print(f"  Found {len(coms_2026)} comments from 2026")
+                comments_df = pd.concat([comments_df, coms_2026], ignore_index=True)
+                comments_df = comments_df.drop_duplicates(subset='id', keep='last')
+        except (pd.errors.EmptyDataError, FileNotFoundError):
+            pass
+
     if submissions_df.empty:
-        print("ERROR: No submissions found in data/ folder")
+        print("ERROR: No submissions found in data/ folder or CSV files")
         return pd.DataFrame(), pd.DataFrame()
 
     # Analyze sentiment for submissions

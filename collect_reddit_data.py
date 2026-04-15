@@ -31,17 +31,14 @@ Seed-only run (1 page per subreddit, no comments – quick proof-of-concept):
 
 import argparse
 import hashlib
-import json
 import os
 import socket
 import subprocess
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pandas as pd
 import requests
-import zstandard
 from tqdm import tqdm
 
 # Subreddits focused on Autism and ADHD
@@ -280,101 +277,6 @@ def _utc_date(ts):
         return ''
 
 
-def _iter_ndjson_zst(zst_path: Path):
-    """Yield parsed JSON objects from a zstd-compressed NDJSON file."""
-    dctx = zstandard.ZstdDecompressor()
-    buf = b""
-    with open(zst_path, "rb") as fh, dctx.stream_reader(fh) as reader:
-        while True:
-            chunk = reader.read(131_072)
-            if not chunk:
-                break
-            buf += chunk
-            lines = buf.split(b"\n")
-            buf = lines[-1]
-            for line in lines[:-1]:
-                line = line.strip()
-                if line:
-                    try:
-                        yield json.loads(line)
-                    except json.JSONDecodeError:
-                        pass
-    if buf.strip():
-        try:
-            yield json.loads(buf)
-        except json.JSONDecodeError:
-            pass
-
-
-def _load_existing_ids_from_zst(data_dir: Path, subreddit: str, kind: str) -> set:
-    """
-    Load existing IDs from zst archives in data/ folder.
-
-    Parameters
-    ----------
-    data_dir : Path to data directory containing zst archives
-    subreddit : Name of subreddit (case-insensitive)
-    kind : 'submissions' or 'comments'
-
-    Returns set of IDs already present in the archive.
-    """
-    zst_file = data_dir / f"{subreddit}_{kind}.zst"
-    if not zst_file.exists():
-        return set()
-
-    existing_ids = set()
-    for obj in _iter_ndjson_zst(zst_file):
-        obj_id = obj.get('id')
-        if obj_id:
-            existing_ids.add(obj_id)
-    return existing_ids
-
-
-def _append_to_zst(data_dir: Path, subreddit: str, kind: str, new_items: list):
-    """
-    Append new items to a zst archive, deduplicating by ID.
-
-    Parameters
-    ----------
-    data_dir : Path to data directory containing zst archives
-    subreddit : Name of subreddit
-    kind : 'submissions' or 'comments'
-    new_items : List of dicts to append
-
-    Returns the number of truly new items added.
-    """
-    if not new_items:
-        return 0
-
-    data_dir.mkdir(parents=True, exist_ok=True)
-    zst_file = data_dir / f"{subreddit}_{kind}.zst"
-
-    # Load existing items
-    existing_items = {}
-    if zst_file.exists():
-        for obj in _iter_ndjson_zst(zst_file):
-            obj_id = obj.get('id')
-            if obj_id:
-                existing_items[obj_id] = obj
-
-    # Add new items, deduplicating
-    initial_count = len(existing_items)
-    for item in new_items:
-        item_id = item.get('id')
-        if item_id:
-            existing_items[item_id] = item
-
-    # Write all items back to the zst file
-    cctx = zstandard.ZstdCompressor()
-    with open(zst_file, 'wb') as fh:
-        with cctx.stream_writer(fh) as writer:
-            for item in existing_items.values():
-                line = json.dumps(item) + '\n'
-                writer.write(line.encode('utf-8'))
-
-    return len(existing_items) - initial_count
-
-
 def extract_submission_features(post):
     """Return a flat dict of relevant submission fields."""
     created = post.get('created_utc', 0)
@@ -411,6 +313,56 @@ def extract_comment_features(comment, subreddit):
     }
 
 
+def _load_existing(path, cols):
+    """Load an existing CSV, returning an empty DataFrame if absent/empty."""
+    try:
+        df = pd.read_csv(path)
+        if df.empty or 'id' not in df.columns:
+            return pd.DataFrame(columns=cols)
+        return df
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        return pd.DataFrame(columns=cols)
+
+
+def _save_data_incrementally(new_submissions, new_comments, submission_cols, comment_cols):
+    """
+    Merge new data with existing CSV files and save immediately.
+    This ensures data is preserved even if the script is interrupted by a timeout.
+
+    Note: Data is saved to reddit_submissions_2026.csv and reddit_comments_2026.csv
+    to clearly distinguish from the historical seed data in data/*.zst archives.
+    """
+    existing_submissions = _load_existing('reddit_submissions_2026.csv', submission_cols)
+    existing_comments = _load_existing('reddit_comments_2026.csv', comment_cols)
+
+    new_submissions_df = (pd.DataFrame(new_submissions, columns=submission_cols)
+                          .drop_duplicates(subset='id') if new_submissions
+                          else pd.DataFrame(columns=submission_cols))
+    new_comments_df = (pd.DataFrame(new_comments, columns=comment_cols)
+                       .drop_duplicates(subset='id') if new_comments
+                       else pd.DataFrame(columns=comment_cols))
+
+    # Count truly new items by finding IDs not in existing data
+    existing_sub_ids = set(existing_submissions['id']) if not existing_submissions.empty else set()
+    existing_com_ids = set(existing_comments['id']) if not existing_comments.empty else set()
+
+    new_sub_ids = set(new_submissions_df['id']) if not new_submissions_df.empty else set()
+    new_com_ids = set(new_comments_df['id']) if not new_comments_df.empty else set()
+
+    truly_new_subs = len(new_sub_ids - existing_sub_ids)
+    truly_new_coms = len(new_com_ids - existing_com_ids)
+
+    submissions_df = (pd.concat([existing_submissions, new_submissions_df], ignore_index=True)
+                      .drop_duplicates(subset='id'))
+    comments_df = (pd.concat([existing_comments, new_comments_df], ignore_index=True)
+                   .drop_duplicates(subset='id'))
+
+    submissions_df.to_csv('reddit_submissions_2026.csv', index=False)
+    comments_df.to_csv('reddit_comments_2026.csv', index=False)
+
+    return truly_new_subs, truly_new_coms, len(submissions_df), len(comments_df)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Collect Reddit AuDHD data')
     parser.add_argument(
@@ -418,14 +370,7 @@ def main():
         help='Seed mode: fetch only 1 page per listing and skip comments. '
              'Useful for a quick proof-of-concept run.'
     )
-    parser.add_argument(
-        '--data-dir', default='data',
-        help='Directory containing zst archives (default: data/)'
-    )
     args = parser.parse_args()
-
-    data_dir = Path(args.data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
 
     if args.seed:
         print("=== SEED MODE: 1 page per listing, no comments ===")
@@ -435,8 +380,14 @@ def main():
 
     print("Reddit data collection – official JSON API")
     print(f"Target subreddits: {', '.join(ALL_SUBREDDITS)}")
-    print(f"Data directory: {data_dir}")
     print()
+
+    # --- Schema for DataFrames (ensures CSV always has a header row) ---
+    SUBMISSION_COLS = ['id', 'subreddit', 'title', 'selftext', 'author_hash', 'score',
+                       'upvote_ratio', 'num_comments', 'created_utc', 'created_date',
+                       'url', 'is_self', 'permalink']
+    COMMENT_COLS = ['id', 'subreddit', 'body', 'author_hash', 'score',
+                    'created_utc', 'created_date', 'parent_id', 'link_id']
 
     total_new_submissions = 0
     total_new_comments = 0
@@ -446,43 +397,30 @@ def main():
         print(f"Subreddit: r/{subreddit}")
         print('='*60)
 
-        # Load existing IDs from zst archive
-        print(f"  Loading existing submission IDs from archive...")
-        existing_submission_ids = _load_existing_ids_from_zst(data_dir, subreddit, 'submissions')
-        print(f"  → {len(existing_submission_ids)} existing submissions in archive")
-
         subreddit_submissions = []
+        subreddit_comments = []
 
         # --- Submissions ---
         posts = collect_submissions(subreddit, max_pages=max_pages)
-        print(f"  → {len(posts)} unique posts collected from API")
-
-        # Filter to only new posts not in archive
-        new_posts = [p for p in posts if p.get('id') not in existing_submission_ids]
-        print(f"  → {len(new_posts)} new posts (not in archive)")
-
-        sub_rows = [extract_submission_features(p) for p in new_posts]
+        print(f"  → {len(posts)} unique posts collected")
+        sub_rows = [extract_submission_features(p) for p in posts]
         subreddit_submissions.extend(sub_rows)
 
-        if not args.seed and new_posts:
+        if not args.seed:
             # --- Comments (fetch per post) ---
-            # Load existing comment IDs
-            print(f"  Loading existing comment IDs from archive...")
-            existing_comment_ids = _load_existing_ids_from_zst(data_dir, subreddit, 'comments')
-            print(f"  → {len(existing_comment_ids)} existing comments in archive")
-
-            # Build map of existing comments by link_id
+            # Load existing comments to check what we already have
+            existing_comments = _load_existing('reddit_comments.csv', COMMENT_COLS)
             existing_comment_links = {}
-            zst_file = data_dir / f"{subreddit}_comments.zst"
-            if zst_file.exists():
-                for comment in _iter_ndjson_zst(zst_file):
-                    link_id = comment.get('link_id', '')
+            if not existing_comments.empty:
+                # Build a map of link_id -> count of comments we have
+                for _, row in existing_comments.iterrows():
+                    link_id = row.get('link_id', '')
                     if link_id:
                         existing_comment_links[link_id] = existing_comment_links.get(link_id, 0) + 1
 
             posts_to_fetch = []
             skipped_count = 0
-            for post in new_posts:
+            for post in posts:
                 post_id = post['id']
                 link_id = f"t3_{post_id}"
                 num_comments = post.get('num_comments', 0)
@@ -499,9 +437,8 @@ def main():
                 posts_to_fetch.append(post)
 
             if skipped_count > 0:
-                print(f"  → Skipping {skipped_count} posts (no comments or already collected)")
+                print(f"  → Skipping {skipped_count} posts (comments already collected)")
 
-            subreddit_comments = []
             print(f"  Fetching comments for {len(posts_to_fetch)} posts …")
             # Save comments every SAVE_INTERVAL posts to prevent data loss on timeout
             SAVE_INTERVAL = 50
@@ -514,7 +451,9 @@ def main():
 
                 # Save incrementally every SAVE_INTERVAL posts to survive timeouts
                 if idx % SAVE_INTERVAL == 0 and subreddit_comments:
-                    saved_coms = _append_to_zst(data_dir, subreddit, 'comments', subreddit_comments)
+                    _, saved_coms, _, _ = _save_data_incrementally(
+                        [], subreddit_comments, SUBMISSION_COLS, COMMENT_COLS
+                    )
                     checkpoint_new_comments += saved_coms
                     if saved_coms > 0:
                         print(f"\n  → Checkpoint: saved {saved_coms} new comments ({idx}/{len(posts_to_fetch)} posts processed)")
@@ -524,39 +463,40 @@ def main():
             print(f"  → {len(subreddit_comments)} comments collected in final batch")
             total_new_comments += checkpoint_new_comments
 
-            # Save final batch of comments
-            if subreddit_comments:
-                saved_coms = _append_to_zst(data_dir, subreddit, 'comments', subreddit_comments)
-                total_new_comments += saved_coms
-        elif not args.seed:
-            print(f"  → No new posts to fetch comments for")
+        # --- Save incrementally after each subreddit ---
+        new_subs, new_coms, total_subs, total_coms = _save_data_incrementally(
+            subreddit_submissions, subreddit_comments, SUBMISSION_COLS, COMMENT_COLS
+        )
+        total_new_submissions += new_subs
+        total_new_comments += new_coms
+        print(f"  → Saved to CSV (total: {total_subs} submissions, {total_coms} comments)")
 
-        # --- Save submissions to zst archive ---
-        if subreddit_submissions:
-            new_subs = _append_to_zst(data_dir, subreddit, 'submissions', subreddit_submissions)
-            total_new_submissions += new_subs
-            print(f"  → Saved {new_subs} new submissions to archive")
-        else:
-            print(f"  → No new submissions to save")
+    # --- Load final saved data for summary ---
+    submissions_df = _load_existing('reddit_submissions_2026.csv', SUBMISSION_COLS)
+    comments_df = _load_existing('reddit_comments_2026.csv', COMMENT_COLS)
+
+    if submissions_df.empty:
+        print("\nWARNING: No submissions were collected.")
+        print("This usually means the Reddit API is not accessible from this network.")
+        print("Reddit blocks requests from datacenter/CI IP ranges.")
+        print("To collect real data, run with Tor: TOR_PROXY=socks5h://127.0.0.1:9050 python3 collect_reddit_data.py")
+        return
 
     print("\n" + "="*60)
     print("DONE")
     print("="*60)
     print(f"New submissions this run : {total_new_submissions}")
     print(f"New comments this run    : {total_new_comments}")
+    print(f"Total submissions (all)  : {len(submissions_df)}")
+    print(f"Total comments (all)     : {len(comments_df)}")
+    print(f"Date range (posts)       : {submissions_df['created_date'].min()} → {submissions_df['created_date'].max()}")
+    print(f"\nFiles written: reddit_submissions.csv  reddit_comments.csv")
 
-    # Count total items across all archives
-    total_subs = 0
-    total_coms = 0
-    for subreddit in ALL_SUBREDDITS:
-        sub_ids = _load_existing_ids_from_zst(data_dir, subreddit, 'submissions')
-        com_ids = _load_existing_ids_from_zst(data_dir, subreddit, 'comments')
-        total_subs += len(sub_ids)
-        total_coms += len(com_ids)
-
-    print(f"Total submissions (all)  : {total_subs}")
-    print(f"Total comments (all)     : {total_coms}")
-    print(f"\nFiles written to: {data_dir}/")
+    print("\nSubmissions by subreddit:")
+    print(submissions_df['subreddit'].value_counts().to_string())
+    if not comments_df.empty:
+        print("\nComments by subreddit:")
+        print(comments_df['subreddit'].value_counts().to_string())
 
 
 if __name__ == "__main__":
