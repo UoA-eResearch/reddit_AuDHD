@@ -10,6 +10,11 @@ on:
     - cron: '0 0 * * 0'   # Every Sunday at midnight UTC
   workflow_dispatch:        # Allow manual runs from the Actions tab
     inputs:
+      collect_data:
+        description: 'Run data collection from Reddit'
+        required: false
+        type: boolean
+        default: true
       force_seed_download:
         description: 'Force seed data download even if substantial data already exists'
         required: false
@@ -40,6 +45,7 @@ jobs:
 
       - name: Test direct connection to Reddit
         id: test_connection
+        if: github.event_name == 'schedule' || inputs.collect_data
         run: |
           echo "Testing direct connection to Reddit API..."
           if timeout 30 curl -f -s -A 'python:test:v1.0' 'https://www.reddit.com/r/test.json' >/dev/null; then
@@ -107,6 +113,7 @@ jobs:
         continue-on-error: true
 
       - name: Collect Reddit data
+        if: github.event_name == 'schedule' || inputs.collect_data
         run: |
           # Run collection via torsocks if needed, otherwise direct connection
           if [ "${{ steps.test_connection.outputs.connection }}" = "tor" ]; then
