@@ -409,7 +409,7 @@ def main():
         if not args.seed:
             # --- Comments (fetch per post) ---
             # Load existing comments to check what we already have
-            existing_comments = _load_existing('reddit_comments.csv', COMMENT_COLS)
+            existing_comments = _load_existing('reddit_comments_2026.csv', COMMENT_COLS)
             existing_comment_links = {}
             if not existing_comments.empty:
                 # Build a map of link_id -> count of comments we have
@@ -490,7 +490,7 @@ def main():
     print(f"Total submissions (all)  : {len(submissions_df)}")
     print(f"Total comments (all)     : {len(comments_df)}")
     print(f"Date range (posts)       : {submissions_df['created_date'].min()} → {submissions_df['created_date'].max()}")
-    print(f"\nFiles written: reddit_submissions.csv  reddit_comments.csv")
+    print(f"\nFiles written: reddit_submissions_2026.csv  reddit_comments_2026.csv")
 
     print("\nSubmissions by subreddit:")
     print(submissions_df['subreddit'].value_counts().to_string())

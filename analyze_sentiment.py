@@ -430,8 +430,8 @@ def main():
 
     # Save analyzed data
     print("\nSaving analyzed data...")
-    submissions_df.to_csv('reddit_submissions_with_sentiment.csv', index=False)
-    comments_df.to_csv('reddit_comments_with_sentiment.csv', index=False)
+    submissions_df.to_csv('reddit_submissions_with_sentiment_2026.csv', index=False)
+    comments_df.to_csv('reddit_comments_with_sentiment_2026.csv', index=False)
     print("Saved analyzed data to CSV files")
 
     # Generate visualizations
@@ -444,8 +444,8 @@ def main():
     print("ANALYSIS COMPLETE!")
     print("="*60)
     print("\nGenerated files:")
-    print("- reddit_submissions_with_sentiment.csv")
-    print("- reddit_comments_with_sentiment.csv")
+    print("- reddit_submissions_with_sentiment_2026.csv")
+    print("- reddit_comments_with_sentiment_2026.csv")
     print("- sentiment_analysis_overview.png")
     print("- sentiment_by_category.png")
     print("- sentiment_by_subreddit.png")
