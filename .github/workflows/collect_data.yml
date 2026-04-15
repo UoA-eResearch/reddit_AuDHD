@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,22 +36,7 @@ jobs:
         id: test_connection
         run: |
           echo "Testing direct connection to Reddit API..."
-          if timeout 30 python3 -c "
-import requests
-try:
-    response = requests.get('https://www.reddit.com/r/test.json',
-                           headers={'User-Agent': 'python:test:v1.0'},
-                           timeout=20)
-    if response.status_code == 200:
-        print('Direct connection successful')
-        exit(0)
-    else:
-        print(f'Direct connection failed with status {response.status_code}')
-        exit(1)
-except Exception as e:
-    print(f'Direct connection failed: {e}')
-    exit(1)
-          "; then
+          if timeout 30 curl -f -s -A 'python:test:v1.0' 'https://www.reddit.com/r/test.json' >/dev/null; then
             echo "connection=direct" >> "$GITHUB_OUTPUT"
             echo "✓ Direct connection to Reddit works - Tor not needed"
           else
@@ -104,6 +91,13 @@ except Exception as e:
 
           echo "subs_before=$SUBS_BEFORE" >> "$GITHUB_OUTPUT"
           echo "coms_before=$COMS_BEFORE" >> "$GITHUB_OUTPUT"
+
+      - name: Download and import seed datasets
+        run: |
+          sudo apt-get install -y aria2
+          pip install bencode.py zstandard
+          python import_seed_data.py
+        continue-on-error: true
 
       - name: Collect Reddit data
         run: |
