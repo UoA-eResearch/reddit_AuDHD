@@ -1,3 +1,5 @@
+[![Collect Reddit Data](https://github.com/UoA-eResearch/reddit_AuDHD/actions/workflows/collect_data.yml/badge.svg)](https://github.com/UoA-eResearch/reddit_AuDHD/actions/workflows/collect_data.yml)
+
 # Reddit Autism & ADHD Sentiment Analysis
 
 This repository contains Python scripts for collecting and analyzing sentiment in Reddit posts and comments from Autism and ADHD-focused communities.
