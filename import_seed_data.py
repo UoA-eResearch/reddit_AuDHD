@@ -2,24 +2,26 @@
 """
 Import seed data from pushshift/redarcs Reddit archives (.zst format).
 
-Downloads zst archives from the-eye.eu and writes them directly to the data/
-folder for consistency with the ongoing collection system. Does NOT merge
-them into CSV files.
+Downloads the redarcs torrent via aria2c, selects only the subreddits we
+track, and merges the resulting data into our CSV files using the same
+field layout and author-hashing convention as collect_reddit_data.py.
 
 Usage (called by GitHub Actions, or manually):
-    python import_seed_data.py [--data-dir DIR]
+    python import_seed_data.py [--seed-dir DIR] [--force]
 """
 
 import argparse
+import bencode
+import csv
 import hashlib
 import json
 import os
 import subprocess
 import sys
+import urllib.request
+import zstandard
 from datetime import datetime, timezone
 from pathlib import Path
-
-import zstandard
 
 # ---------------------------------------------------------------------------
 # Constants – must stay in sync with collect_reddit_data.py
@@ -30,8 +32,21 @@ SUBREDDITS = [
     "ADHD", "ADHDmemes", "adhdwomen", "adhd_anxiety",
 ]
 
-# Base URL for downloading archives from the-eye.eu
-BASE_URL = "https://the-eye.eu/redarcs/files"
+TORRENT_URL = (
+    "https://academictorrents.com/download/"
+    "3e3f64dee22dc304cdd2546254ca1f8e8ae542b4.torrent"
+)
+
+SUBMISSION_COLS = [
+    "id", "subreddit", "title", "selftext", "author_hash", "score",
+    "upvote_ratio", "num_comments", "created_utc", "created_date",
+    "url", "is_self", "permalink",
+]
+
+COMMENT_COLS = [
+    "id", "subreddit", "body", "author_hash", "score",
+    "created_utc", "created_date", "parent_id", "link_id",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -78,107 +93,153 @@ def _iter_ndjson_zst(zst_path: Path):
             pass
 
 
+def _load_existing_ids(csv_path: Path) -> set:
+    if not csv_path.exists():
+        return set()
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        return {row["id"] for row in csv.DictReader(f)}
+
+
 # ---------------------------------------------------------------------------
-# Download and processing helpers
+# Import helpers
 # ---------------------------------------------------------------------------
 
-def download_archive(subreddit: str, kind: str, dest_dir: Path) -> Path:
-    """
-    Download a single archive from the-eye.eu.
-
-    Parameters
-    ----------
-    subreddit : subreddit name
-    kind : 'submissions' or 'comments'
-    dest_dir : destination directory for the file
-
-    Returns the path to the downloaded file.
-    """
-    filename = f"{subreddit}_{kind}.zst"
-    dest_path = dest_dir / filename
-    url = f"{BASE_URL}/{filename}"
-
-    print(f"  Downloading {filename} from the-eye.eu...")
-    # Use curl with --insecure flag due to invalid SSL certificate on the-eye.eu
-    cmd = [
-        "curl", "-L", "--insecure", "-f", "-o", str(dest_path),
-        "-A", "python:reddit_audhd:v1.0",
-        url
-    ]
-    result = subprocess.run(cmd, capture_output=True)
-    if result.returncode != 0:
-        print(f"    ERROR: Failed to download {filename}")
-        print(f"    {result.stderr.decode()}")
-        if dest_path.exists():
-            dest_path.unlink()
-        return None
-
-    print(f"    Downloaded {dest_path.stat().st_size:,} bytes")
-    return dest_path
-
-
-def normalize_and_write_zst(input_zst: Path, output_zst: Path, kind: str) -> int:
-    """
-    Read archive, normalize fields to match collect_reddit_data.py format,
-    and write to output zst file.
-
-    Parameters
-    ----------
-    input_zst : path to input zst file
-    output_zst : path to output zst file
-    kind : 'submissions' or 'comments'
-
-    Returns the number of records written.
-    """
-    print(f"  Normalizing {input_zst.name}...")
-
-    items = {}
-    for obj in _iter_ndjson_zst(input_zst):
-        obj_id = obj.get("id", "")
-        if not obj_id:
+def import_submissions(zst_path: Path, out_csv: Path) -> int:
+    existing_ids = _load_existing_ids(out_csv)
+    new_rows = []
+    for post in _iter_ndjson_zst(zst_path):
+        pid = post.get("id", "")
+        if not pid or pid in existing_ids:
             continue
+        ts = post.get("created_utc", 0)
+        new_rows.append({
+            "id": pid,
+            "subreddit": post.get("subreddit", ""),
+            "title": post.get("title", ""),
+            "selftext": post.get("selftext", ""),
+            "author_hash": _hash_author(post.get("author", "")),
+            "score": post.get("score", 0),
+            "upvote_ratio": post.get("upvote_ratio", ""),
+            "num_comments": post.get("num_comments", 0),
+            "created_utc": ts,
+            "created_date": _utc_date(ts),
+            "url": post.get("url", ""),
+            "is_self": post.get("is_self", False),
+            "permalink": post.get("permalink", ""),
+        })
+        existing_ids.add(pid)
 
-        if kind == "submissions":
-            ts = obj.get("created_utc", 0)
-            items[obj_id] = {
-                "id": obj_id,
-                "subreddit": obj.get("subreddit", ""),
-                "title": obj.get("title", ""),
-                "selftext": obj.get("selftext", ""),
-                "author_hash": _hash_author(obj.get("author", "")),
-                "score": obj.get("score", 0),
-                "upvote_ratio": obj.get("upvote_ratio", ""),
-                "num_comments": obj.get("num_comments", 0),
-                "created_utc": ts,
-                "created_date": _utc_date(ts),
-                "url": obj.get("url", ""),
-                "is_self": obj.get("is_self", False),
-                "permalink": obj.get("permalink", ""),
-            }
-        elif kind == "comments":
-            ts = obj.get("created_utc", 0)
-            items[obj_id] = {
-                "id": obj_id,
-                "subreddit": obj.get("subreddit", ""),
-                "body": obj.get("body", ""),
-                "author_hash": _hash_author(obj.get("author", "")),
-                "score": obj.get("score", 0),
-                "created_utc": ts,
-                "created_date": _utc_date(ts),
-                "parent_id": obj.get("parent_id", ""),
-                "link_id": obj.get("link_id", ""),
-            }
+    if new_rows:
+        write_header = not out_csv.exists()
+        with open(out_csv, "a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=SUBMISSION_COLS)
+            if write_header:
+                w.writeheader()
+            w.writerows(new_rows)
+    return len(new_rows)
 
-    # Write to output file
-    cctx = zstandard.ZstdCompressor()
-    with open(output_zst, 'wb') as fh:
-        with cctx.stream_writer(fh) as writer:
-            for item in items.values():
-                line = json.dumps(item) + '\n'
-                writer.write(line.encode('utf-8'))
 
-    print(f"    Wrote {len(items):,} records to {output_zst.name}")
-    return len(items)
+def import_comments(zst_path: Path, out_csv: Path) -> int:
+    existing_ids = _load_existing_ids(out_csv)
+    new_rows = []
+    for comment in _iter_ndjson_zst(zst_path):
+        cid = comment.get("id", "")
+        if not cid or cid in existing_ids:
+            continue
+        ts = comment.get("created_utc", 0)
+        new_rows.append({
+            "id": cid,
+            "subreddit": comment.get("subreddit", ""),
+            "body": comment.get("body", ""),
+            "author_hash": _hash_author(comment.get("author", "")),
+            "score": comment.get("score", 0),
+            "created_utc": ts,
+            "created_date": _utc_date(ts),
+            "parent_id": comment.get("parent_id", ""),
+            "link_id": comment.get("link_id", ""),
+        })
+        existing_ids.add(cid)
+
+    if new_rows:
+        write_header = not out_csv.exists()
+        with open(out_csv, "a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=COMMENT_COLS)
+            if write_header:
+                w.writeheader()
+            w.writerows(new_rows)
+    return len(new_rows)
+
+
+# ---------------------------------------------------------------------------
+# Torrent helpers
+# ---------------------------------------------------------------------------
+
+def find_torrent_file_indices(torrent_path: Path) -> list:
+    """
+    Parse the .torrent file and return the 1-based file indices for each
+    {subreddit}_submissions.zst and {subreddit}_comments.zst file.
+    """
+    with open(torrent_path, "rb") as f:
+        meta = bencode.decode(f.read())
+
+    info = meta.get("info", meta.get(b"info", {}))
+    files = info.get("files", info.get(b"files", []))
+
+    sub_lower = {s.lower() for s in SUBREDDITS}
+    indices = []
+    for i, finfo in enumerate(files, 1):
+        path_parts = finfo.get("path", finfo.get(b"path", []))
+        filename = path_parts[-1] if path_parts else ""
+        if isinstance(filename, bytes):
+            filename = filename.decode("utf-8", errors="replace")
+        stem = filename.removesuffix(".zst")
+        # Files are named "{subreddit}_submissions" or "{subreddit}_comments"
+        sub_name = stem.rsplit("_", 1)[0] if "_" in stem else stem
+        if sub_name.lower() in sub_lower:
+            indices.append(i)
+    return indices
+
+
+def download_torrent(torrent_path: Path, dest_dir: Path, indices: list) -> bool:
+    """Download selected files from the torrent using aria2c."""
+    cmd = [
+        "aria2c",
+        "--seed-time=0",
+        "--file-allocation=none",
+        f"--dir={dest_dir}",
+    ]
+    if indices:
+        cmd.append(f"--select-file={','.join(str(i) for i in indices)}")
+    cmd.append(str(torrent_path))
+    result = subprocess.run(cmd)
+    return result.returncode == 0
+
+
+def remove_partial_downloads(seed_dir: Path) -> int:
+    """
+    Remove partially downloaded files for subreddits not in SUBREDDITS.
+
+    aria2c may partially download adjacent files due to shared torrent pieces.
+    This function removes any .zst files that are not for our tracked subreddits.
+
+    Returns the number of files removed.
+    """
+    sub_lower = {s.lower() for s in SUBREDDITS}
+    removed_count = 0
+
+    for zst_file in seed_dir.rglob("*.zst"):
+        stem = zst_file.stem  # e.g. "autism_submissions" or "autism_comments"
+        if "_" not in stem:
+            continue
+        sub_name = stem.rsplit("_", 1)[0]
+
+        # Remove files for subreddits we're not tracking
+        if sub_name.lower() not in sub_lower:
+            print(f"  Removing partially downloaded file: {zst_file.name}")
+            zst_file.unlink()
+            removed_count += 1
+
+    return removed_count
 
 
 # ---------------------------------------------------------------------------
@@ -187,89 +248,114 @@ def normalize_and_write_zst(input_zst: Path, output_zst: Path, kind: str) -> int
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Import seed datasets from the-eye.eu Reddit archives."
+        description="Import seed datasets from the redarcs torrent."
     )
     parser.add_argument(
-        "--data-dir", default="data",
-        help="Directory where zst archives will be stored (default: data/)",
+        "--torrent-file", default="/tmp/redarcs.torrent",
+        help="Path where the .torrent file is (or will be) stored.",
     )
     parser.add_argument(
-        "--temp-dir", default="/tmp/seed_download",
-        help="Temporary directory for downloads (default: /tmp/seed_download)",
+        "--seed-dir", default="/tmp/seed",
+        help="Directory where torrent files are downloaded.",
+    )
+    parser.add_argument(
+        "--submissions-csv", default="reddit_submissions.csv",
+    )
+    parser.add_argument(
+        "--comments-csv", default="reddit_comments.csv",
     )
     parser.add_argument(
         "--force", action="store_true",
-        help="Download and import even when archives already exist.",
+        help="Import even when the CSV files already have substantial data.",
     )
     args = parser.parse_args()
 
-    data_dir = Path(args.data_dir)
-    temp_dir = Path(args.temp_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    subs_csv = Path(args.submissions_csv)
+    coms_csv = Path(args.comments_csv)
+    torrent_path = Path(args.torrent_file)
+    seed_dir = Path(args.seed_dir)
+    seed_dir.mkdir(parents=True, exist_ok=True)
 
-    print("Seed data import from the-eye.eu")
-    print(f"Data directory: {data_dir}")
-    print(f"Temp directory: {temp_dir}")
-    print()
-
-    # Check if we should skip import
-    if not args.force:
-        # Check if we already have substantial data
-        existing_count = 0
-        for subreddit in SUBREDDITS:
-            sub_file = data_dir / f"{subreddit}_submissions.zst"
-            if sub_file.exists():
-                existing_count += 1
-
-        if existing_count >= len(SUBREDDITS):
+    # Skip if we already have substantial data (avoids re-seeding every run).
+    if not args.force and subs_csv.exists():
+        with open(subs_csv) as f:
+            lines = sum(1 for _ in f) - 1  # exclude header
+        if lines > 10_000:
             print(
-                f"All {len(SUBREDDITS)} subreddit archives already exist in {data_dir}. "
-                "Skipping download (use --force to override)."
+                f"Already have {lines:,} submissions; skipping seed import "
+                "(use --force to override)."
             )
             return
 
-    # Download and process each subreddit
+    # Download the .torrent file if not already present.
+    if not torrent_path.exists():
+        print(f"Downloading torrent file from {TORRENT_URL} ...")
+        # Use a custom user agent to avoid 403 errors
+        req = urllib.request.Request(
+            TORRENT_URL,
+            headers={'User-Agent': 'python:reddit_audhd:v1.0'}
+        )
+        with urllib.request.urlopen(req) as response, open(torrent_path, 'wb') as out_file:
+            out_file.write(response.read())
+        print(f"Torrent file saved to {torrent_path}")
+
+    # Identify which files in the torrent we need.
+    print("Parsing torrent file for relevant file indices ...")
+    indices = find_torrent_file_indices(torrent_path)
+    if indices:
+        print(f"  Will download {len(indices)} file(s): indices {indices}")
+    else:
+        print(
+            "  ERROR: Could not determine file indices for tracked subreddits.",
+            file=sys.stderr
+        )
+        print(
+            f"  Expected files for subreddits: {', '.join(SUBREDDITS)}",
+            file=sys.stderr
+        )
+        sys.exit(1)
+
+    # Download via aria2c.
+    print("Starting torrent download via aria2c ...")
+    if not download_torrent(torrent_path, seed_dir, indices):
+        print("aria2c download failed.", file=sys.stderr)
+        sys.exit(1)
+
+    # Remove partially downloaded adjacent files.
+    print("Cleaning up partially downloaded files ...")
+    removed = remove_partial_downloads(seed_dir)
+    if removed > 0:
+        print(f"  Removed {removed} partially downloaded file(s)")
+    else:
+        print("  No partial downloads to remove")
+
+    # Process downloaded .zst archives.
     total_subs = 0
     total_coms = 0
+    sub_lower = {s.lower() for s in SUBREDDITS}
 
-    for subreddit in SUBREDDITS:
-        print(f"\n{'='*60}")
-        print(f"Processing: r/{subreddit}")
-        print('='*60)
+    for zst_file in sorted(seed_dir.rglob("*.zst")):
+        stem = zst_file.stem  # e.g. "autism_submissions" or "autism_comments"
+        if "_" not in stem:
+            continue
+        sub_name, kind = stem.rsplit("_", 1)
+        if sub_name.lower() not in sub_lower:
+            continue
 
-        for kind in ['submissions', 'comments']:
-            output_file = data_dir / f"{subreddit}_{kind}.zst"
-
-            # Skip if already exists and not forced
-            if output_file.exists() and not args.force:
-                print(f"  {output_file.name} already exists, skipping")
-                continue
-
-            # Download to temp directory
-            temp_file = download_archive(subreddit, kind, temp_dir)
-            if not temp_file or not temp_file.exists():
-                print(f"  Failed to download {subreddit}_{kind}.zst")
-                continue
-
-            # Normalize and write to data directory
-            count = normalize_and_write_zst(temp_file, output_file, kind)
-
-            if kind == 'submissions':
-                total_subs += count
-            else:
-                total_coms += count
-
-            # Clean up temp file
-            temp_file.unlink()
+        if kind == "submissions":
+            print(f"Importing submissions from {zst_file.name} ...")
+            n = import_submissions(zst_file, subs_csv)
+            total_subs += n
+            print(f"  +{n:,} submissions")
+        elif kind == "comments":
+            print(f"Importing comments from {zst_file.name} ...")
+            n = import_comments(zst_file, coms_csv)
+            total_coms += n
+            print(f"  +{n:,} comments")
 
     print(
-        f"\n{'='*60}\n"
-        f"Seed import complete\n"
-        f"{'='*60}\n"
-        f"Total submissions: {total_subs:,}\n"
-        f"Total comments: {total_coms:,}\n"
-        f"Files written to: {data_dir}/\n"
+        f"\nSeed import complete: "
+        f"+{total_subs:,} submissions, +{total_coms:,} comments"
     )
 
 
