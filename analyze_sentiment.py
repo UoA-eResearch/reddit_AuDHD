@@ -262,11 +262,12 @@ def load_and_analyze_data():
     print("\nAnalyzing sentiment for submissions...")
     # Combine title and selftext for submissions
     submissions_df['text'] = submissions_df['title'].fillna('') + ' ' + submissions_df['selftext'].fillna('')
+    _n_workers = os.cpu_count() or 1
     _n_sub = len(submissions_df)
-    _chunksize_sub = max(1, _n_sub // (os.cpu_count() or 1))
+    _chunksize_sub = max(1, _n_sub // _n_workers)
     submissions_df['sentiment_score'] = process_map(
         analyze_sentiment, submissions_df['text'],
-        desc="Submissions", chunksize=_chunksize_sub,
+        desc="Submissions", chunksize=_chunksize_sub, max_workers=_n_workers,
     )
     submissions_df['sentiment_category'] = submissions_df['sentiment_score'].apply(categorize_sentiment)
 
@@ -274,10 +275,10 @@ def load_and_analyze_data():
     if not comments_df.empty:
         print("\nAnalyzing sentiment for comments...")
         _n_com = len(comments_df)
-        _chunksize_com = max(1, _n_com // (os.cpu_count() or 1))
+        _chunksize_com = max(1, _n_com // _n_workers)
         comments_df['sentiment_score'] = process_map(
             analyze_sentiment, comments_df['body'],
-            desc="Comments", chunksize=_chunksize_com,
+            desc="Comments", chunksize=_chunksize_com, max_workers=_n_workers,
         )
         comments_df['sentiment_category'] = comments_df['sentiment_score'].apply(categorize_sentiment)
 
