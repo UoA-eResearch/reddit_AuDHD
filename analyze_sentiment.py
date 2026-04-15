@@ -9,7 +9,9 @@ Data sources:
 Combines both sources, deduplicates by ID, and performs sentiment analysis.
 """
 
+import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -18,6 +20,26 @@ import seaborn as sns
 import zstandard
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from tqdm import tqdm
+
+# LFS pointer files start with this prefix
+_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com"
+# Zstd magic bytes (first 4 bytes of any valid zstd frame)
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def _hash_author(username: str) -> str:
+    """Return first 16 hex chars of SHA-256(username), empty for deleted."""
+    if not username or username in ("[deleted]", "[removed]"):
+        return ""
+    return hashlib.sha256(username.encode()).hexdigest()[:16]
+
+
+def _utc_date(ts) -> str:
+    """Convert a UTC timestamp to a YYYY-MM-DD string."""
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError):
+        return ""
 
 # Initialize VADER sentiment analyzer
 analyzer = SentimentIntensityAnalyzer()
@@ -47,73 +69,147 @@ def categorize_sentiment(compound_score):
         return 'neutral'
 
 def _iter_ndjson_zst(zst_path: Path):
-    """Yield parsed JSON objects from a zstd-compressed NDJSON file."""
+    """Yield parsed JSON objects from a zstd-compressed NDJSON file.
+
+    Raises RuntimeError with a helpful message if the file looks like a Git LFS
+    pointer (i.e., `git lfs pull` has not been run) or is not a valid zstd archive.
+    """
+    with open(zst_path, "rb") as fh:
+        header = fh.read(len(_LFS_POINTER_PREFIX))
+
+    if header.startswith(_LFS_POINTER_PREFIX):
+        raise RuntimeError(
+            f"{zst_path} is a Git LFS pointer file, not the real archive. "
+            "Run `git lfs pull` to download the actual data."
+        )
+    if not header.startswith(_ZSTD_MAGIC):
+        raise RuntimeError(
+            f"{zst_path} does not appear to be a valid zstd archive "
+            f"(first bytes: {header[:4]!r}). Run `git lfs pull` if using Git LFS."
+        )
+
     dctx = zstandard.ZstdDecompressor()
-    buf = b""
+    buf = bytearray()
     with open(zst_path, "rb") as fh, dctx.stream_reader(fh) as reader:
         while True:
             chunk = reader.read(131_072)
             if not chunk:
                 break
-            buf += chunk
-            lines = buf.split(b"\n")
-            buf = lines[-1]
-            for line in lines[:-1]:
-                line = line.strip()
+            buf.extend(chunk)
+            newline_index = buf.find(b"\n")
+            while newline_index != -1:
+                line = bytes(buf[:newline_index]).strip()
+                del buf[:newline_index + 1]
                 if line:
                     try:
                         yield json.loads(line)
                     except json.JSONDecodeError:
                         pass
-    if buf.strip():
+                newline_index = buf.find(b"\n")
+    if bytes(buf).strip():
         try:
-            yield json.loads(buf)
+            yield json.loads(bytes(buf))
         except json.JSONDecodeError:
             pass
 
 
+def _dataframe_batches(records, columns, batch_size=50_000):
+    """Yield DataFrames built from bounded-size batches of record dicts."""
+    batch = []
+    for record in records:
+        batch.append(record)
+        if len(batch) >= batch_size:
+            yield pd.DataFrame(batch, columns=columns)
+            batch.clear()
+    if batch:
+        yield pd.DataFrame(batch, columns=columns)
+
+
 def load_submissions_from_zst(data_dir: Path):
-    """Load all submissions from zst archives in data_dir."""
-    submissions = []
+    """Load all submissions from zst archives in data_dir.
+
+    Derives author_hash (SHA-256 of author) and created_date (from created_utc)
+    to match the schema used by collect_reddit_data.py / import_seed_data.py.
+    Records with a missing or empty id are skipped.
+    """
+    columns = [
+        'id', 'subreddit', 'title', 'selftext', 'author_hash', 'score',
+        'upvote_ratio', 'num_comments', 'created_utc', 'created_date',
+        'url', 'is_self', 'permalink',
+    ]
+    frames = []
     for zst_file in sorted(data_dir.glob("*_submissions.zst")):
         print(f"  Loading {zst_file.name}...")
-        for post in _iter_ndjson_zst(zst_file):
-            submissions.append({
-                'id': post.get('id', ''),
+
+        def _submission_record(post):
+            post_id = post.get('id', '')
+            if not post_id:
+                return None
+            ts = post.get('created_utc', 0)
+            return {
+                'id': post_id,
                 'subreddit': post.get('subreddit', ''),
                 'title': post.get('title', ''),
                 'selftext': post.get('selftext', ''),
-                'author_hash': post.get('author_hash', ''),
+                'author_hash': _hash_author(post.get('author', '')),
                 'score': post.get('score', 0),
                 'upvote_ratio': post.get('upvote_ratio', None),
                 'num_comments': post.get('num_comments', 0),
-                'created_utc': post.get('created_utc', 0),
-                'created_date': post.get('created_date', ''),
+                'created_utc': ts,
+                'created_date': _utc_date(ts),
                 'url': post.get('url', ''),
                 'is_self': post.get('is_self', False),
                 'permalink': post.get('permalink', ''),
-            })
-    return pd.DataFrame(submissions)
+            }
+
+        records = (r for post in _iter_ndjson_zst(zst_file)
+                   if (r := _submission_record(post)) is not None)
+        frames.extend(_dataframe_batches(records, columns))
+
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True)
 
 
 def load_comments_from_zst(data_dir: Path):
-    """Load all comments from zst archives in data_dir."""
-    comments = []
+    """Load all comments from zst archives in data_dir.
+
+    Derives author_hash (SHA-256 of author) and created_date (from created_utc)
+    to match the schema used by collect_reddit_data.py / import_seed_data.py.
+    Records with a missing or empty id are skipped.
+    """
+    columns = [
+        'id', 'subreddit', 'body', 'author_hash', 'score',
+        'created_utc', 'created_date', 'parent_id', 'link_id',
+    ]
+    frames = []
     for zst_file in sorted(data_dir.glob("*_comments.zst")):
         print(f"  Loading {zst_file.name}...")
-        for comment in _iter_ndjson_zst(zst_file):
-            comments.append({
-                'id': comment.get('id', ''),
+
+        def _comment_record(comment):
+            comment_id = comment.get('id', '')
+            if not comment_id:
+                return None
+            ts = comment.get('created_utc', 0)
+            return {
+                'id': comment_id,
                 'subreddit': comment.get('subreddit', ''),
                 'body': comment.get('body', ''),
-                'author_hash': comment.get('author_hash', ''),
+                'author_hash': _hash_author(comment.get('author', '')),
                 'score': comment.get('score', 0),
-                'created_utc': comment.get('created_utc', 0),
-                'created_date': comment.get('created_date', ''),
+                'created_utc': ts,
+                'created_date': _utc_date(ts),
                 'parent_id': comment.get('parent_id', ''),
                 'link_id': comment.get('link_id', ''),
-            })
-    return pd.DataFrame(comments)
+            }
+
+        records = (r for comment in _iter_ndjson_zst(zst_file)
+                   if (r := _comment_record(comment)) is not None)
+        frames.extend(_dataframe_batches(records, columns))
+
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True)
 
 
 def load_and_analyze_data():
