@@ -369,7 +369,9 @@ def _save_data_incrementally(new_submissions, new_comments, submission_cols, com
     comments_df = (pd.concat([existing_comments, new_comments_df], ignore_index=True)
                    .drop_duplicates(subset='id'))
 
-    # Enforce 2026-only constraint before writing
+    # Enforce 2026-only constraint before writing.
+    # This acts as a safety net in case callers pass pre-2026 data directly,
+    # complementing the per-post filtering applied during collection.
     if not submissions_df.empty and 'created_utc' in submissions_df.columns:
         submissions_df = submissions_df[submissions_df['created_utc'] >= YEAR_START_UTC]
     if not comments_df.empty and 'created_utc' in comments_df.columns:
