@@ -9,6 +9,12 @@ on:
   schedule:
     - cron: '0 0 * * 0'   # Every Sunday at midnight UTC
   workflow_dispatch:        # Allow manual runs from the Actions tab
+    inputs:
+      force_seed_download:
+        description: 'Force seed data download even if substantial data already exists'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write           # Required to commit data back to the repo
@@ -96,7 +102,11 @@ jobs:
         run: |
           sudo apt-get install -y aria2
           pip install bencode.py zstandard
-          python import_seed_data.py
+          if [ "${{ github.event.inputs.force_seed_download }}" = "true" ]; then
+            python import_seed_data.py --force
+          else
+            python import_seed_data.py
+          fi
         continue-on-error: true
 
       - name: Collect Reddit data
