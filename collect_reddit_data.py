@@ -59,6 +59,8 @@ REQUEST_DELAY = 2.0
 MAX_COMMENTS_PER_POST = 50
 # Maximum attempts to rotate the Tor exit node before giving up on a request
 MAX_ROTATION_ATTEMPTS = 10
+# Only collect data from 2026 onwards (Unix UTC timestamp for 2026-01-01 00:00:00 UTC)
+YEAR_START_UTC = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
 
 
 def _detect_tor_proxy():
@@ -230,9 +232,19 @@ def collect_submissions(subreddit, max_pages=10):
                 post_id = post.get('id')
                 if not post_id:
                     continue
+                # Skip posts created before the collection year
+                if post.get('created_utc', 0) < YEAR_START_UTC:
+                    continue
                 posts[post_id] = post
             page += 1
             time.sleep(REQUEST_DELAY)
+            # For 'new' (chronological desc) listing, stop early once all posts on
+            # a page are older than our start date – no newer posts will follow.
+            if listing == 'new' and all(
+                c.get('data', {}).get('created_utc', 0) < YEAR_START_UTC
+                for c in children if isinstance(c.get('data'), dict)
+            ):
+                break
             if not after or page >= max_pages:
                 break
 
@@ -356,6 +368,14 @@ def _save_data_incrementally(new_submissions, new_comments, submission_cols, com
                       .drop_duplicates(subset='id'))
     comments_df = (pd.concat([existing_comments, new_comments_df], ignore_index=True)
                    .drop_duplicates(subset='id'))
+
+    # Enforce 2026-only constraint before writing.
+    # This acts as a safety net in case callers pass pre-2026 data directly,
+    # complementing the per-post filtering applied during collection.
+    if not submissions_df.empty and 'created_utc' in submissions_df.columns:
+        submissions_df = submissions_df[submissions_df['created_utc'] >= YEAR_START_UTC]
+    if not comments_df.empty and 'created_utc' in comments_df.columns:
+        comments_df = comments_df[comments_df['created_utc'] >= YEAR_START_UTC]
 
     submissions_df.to_csv('reddit_submissions_2026.csv', index=False)
     comments_df.to_csv('reddit_comments_2026.csv', index=False)

@@ -99,14 +99,11 @@ jobs:
           echo "coms_before=$COMS_BEFORE" >> "$GITHUB_OUTPUT"
 
       - name: Download and import seed datasets
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.force_seed_download == 'true'
         run: |
           sudo apt-get install -y aria2
           pip install bencode.py zstandard
-          if [ "${{ github.event.inputs.force_seed_download }}" = "true" ]; then
-            python import_seed_data.py --force
-          else
-            python import_seed_data.py
-          fi
+          python import_seed_data.py --force
         continue-on-error: true
 
       - name: Collect Reddit data
