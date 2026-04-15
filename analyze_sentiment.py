@@ -98,7 +98,7 @@ def _iter_ndjson_zst(zst_path: Path):
             buf.extend(chunk)
             newline_index = buf.find(b"\n")
             while newline_index != -1:
-                line = bytes(buf[:newline_index]).strip()
+                line = buf[:newline_index].strip()
                 del buf[:newline_index + 1]
                 if line:
                     try:
@@ -106,9 +106,10 @@ def _iter_ndjson_zst(zst_path: Path):
                     except json.JSONDecodeError:
                         pass
                 newline_index = buf.find(b"\n")
-    if bytes(buf).strip():
+    remaining = buf.strip()
+    if remaining:
         try:
-            yield json.loads(bytes(buf))
+            yield json.loads(remaining)
         except json.JSONDecodeError:
             pass
 
