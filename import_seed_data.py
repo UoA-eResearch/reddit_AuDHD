@@ -278,7 +278,15 @@ def main():
     if indices:
         print(f"  Will download {len(indices)} file(s): indices {indices}")
     else:
-        print("  Could not determine file indices; all files will be considered.")
+        print(
+            "  ERROR: Could not determine file indices for tracked subreddits.",
+            file=sys.stderr
+        )
+        print(
+            f"  Expected files for subreddits: {', '.join(SUBREDDITS)}",
+            file=sys.stderr
+        )
+        sys.exit(1)
 
     # Download via aria2c.
     print("Starting torrent download via aria2c ...")
