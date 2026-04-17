@@ -194,7 +194,7 @@ def _add_sentiment_columns(df, text_column):
 def process_and_save_sentiment():
     """Load all sources, run VADER sentiment, and save CSVs in constant memory.
 
-    Each zst file is streamed in 50 000-row batches.  After sentiment is
+    Each zst file is streamed in 50,000-row batches.  After sentiment is
     computed for a batch it is appended to the output CSV and freed, so peak
     RAM stays proportional to one batch rather than the full dataset.
 
@@ -553,7 +553,7 @@ def main():
     # (constant memory — only one 50k-row batch in memory at a time)
     process_and_save_sentiment()
 
-    # Phase 2: load processed data for visualisation / statistics.
+    # Phase 2: load processed data for visualization / statistics.
     # Only read the columns actually needed to keep memory low.
     print("\nLoading results for visualization...")
     sub_path = Path("reddit_submissions_with_sentiment_2026.csv")
