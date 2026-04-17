@@ -176,6 +176,7 @@ jobs:
 
       - name: Run sentiment analysis
         if: steps.check_data.outputs.data_collected == 'true'
+        timeout-minutes: 300
         run: |
           # Start background resource monitor – logs every ~30 s while analysis runs.
           (
