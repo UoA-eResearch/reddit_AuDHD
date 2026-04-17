@@ -9,9 +9,9 @@ Data sources:
 Combines both sources, deduplicates by ID, and performs sentiment analysis.
 """
 
+import gc
 import hashlib
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,8 +20,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import zstandard
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from tqdm import tqdm
-from tqdm.contrib.concurrent import process_map
 
 # LFS pointer files start with this prefix
 _LFS_POINTER_PREFIX = b"version https://git-lfs.github.com"
@@ -128,207 +126,195 @@ def _dataframe_batches(records, columns, batch_size=50_000):
         yield pd.DataFrame(batch, columns=columns)
 
 
-def load_submissions_from_zst(data_dir: Path):
-    """Load all submissions from zst archives in data_dir.
+_AUTISM_SUBREDDITS = {'autism', 'aspergers', 'aspergirls', 'autisticadults'}
 
-    Derives author_hash (SHA-256 of author) and created_date (from created_utc)
-    to match the schema used by collect_reddit_data.py / import_seed_data.py.
-    Records with a missing or empty id are skipped.
+_SUB_COLUMNS = [
+    'id', 'subreddit', 'title', 'selftext', 'author_hash', 'score',
+    'upvote_ratio', 'num_comments', 'created_utc', 'created_date',
+    'url', 'is_self', 'permalink',
+]
 
-    Processes batches incrementally to avoid OOM: concatenates every few batches
-    instead of accumulating all batches from a file in memory.
-    """
-    columns = [
-        'id', 'subreddit', 'title', 'selftext', 'author_hash', 'score',
-        'upvote_ratio', 'num_comments', 'created_utc', 'created_date',
-        'url', 'is_self', 'permalink',
-    ]
-    all_frames = []
-    for zst_file in sorted(data_dir.glob("*_submissions.zst")):
-        print(f"  Loading {zst_file.name}...")
-
-        def _submission_record(post):
-            post_id = post.get('id', '')
-            if not post_id:
-                return None
-            ts = post.get('created_utc', 0)
-            return {
-                'id': post_id,
-                'subreddit': post.get('subreddit', ''),
-                'title': post.get('title', ''),
-                'selftext': post.get('selftext', ''),
-                'author_hash': _hash_author(post.get('author', '')),
-                'score': post.get('score', 0),
-                'upvote_ratio': post.get('upvote_ratio', None),
-                'num_comments': post.get('num_comments', 0),
-                'created_utc': ts,
-                'created_date': _utc_date(ts),
-                'url': post.get('url', ''),
-                'is_self': post.get('is_self', False),
-                'permalink': post.get('permalink', ''),
-            }
-
-        records = (r for post in _iter_ndjson_zst(zst_file)
-                   if (r := _submission_record(post)) is not None)
-
-        # Concatenate every 5 batches to avoid accumulating too many in memory
-        batch_group = []
-        for batch_df in _dataframe_batches(records, columns):
-            batch_group.append(batch_df)
-            if len(batch_group) >= 5:
-                merged = pd.concat(batch_group, ignore_index=True)
-                all_frames.append(merged)
-                batch_group.clear()
-        # Handle remaining batches
-        if batch_group:
-            merged = pd.concat(batch_group, ignore_index=True)
-            all_frames.append(merged)
-
-    if not all_frames:
-        return pd.DataFrame(columns=columns)
-    return pd.concat(all_frames, ignore_index=True)
+_COM_COLUMNS = [
+    'id', 'subreddit', 'body', 'author_hash', 'score',
+    'created_utc', 'created_date', 'parent_id', 'link_id',
+]
 
 
-def load_comments_from_zst(data_dir: Path):
-    """Load all comments from zst archives in data_dir.
-
-    Derives author_hash (SHA-256 of author) and created_date (from created_utc)
-    to match the schema used by collect_reddit_data.py / import_seed_data.py.
-    Records with a missing or empty id are skipped.
-
-    Processes batches incrementally to avoid OOM: concatenates every few batches
-    instead of accumulating all batches from a file in memory.
-    """
-    columns = [
-        'id', 'subreddit', 'body', 'author_hash', 'score',
-        'created_utc', 'created_date', 'parent_id', 'link_id',
-    ]
-    all_frames = []
-    for zst_file in sorted(data_dir.glob("*_comments.zst")):
-        print(f"  Loading {zst_file.name}...")
-
-        def _comment_record(comment):
-            comment_id = comment.get('id', '')
-            if not comment_id:
-                return None
-            ts = comment.get('created_utc', 0)
-            return {
-                'id': comment_id,
-                'subreddit': comment.get('subreddit', ''),
-                'body': comment.get('body', ''),
-                'author_hash': _hash_author(comment.get('author', '')),
-                'score': comment.get('score', 0),
-                'created_utc': ts,
-                'created_date': _utc_date(ts),
-                'parent_id': comment.get('parent_id', ''),
-                'link_id': comment.get('link_id', ''),
-            }
-
-        records = (r for comment in _iter_ndjson_zst(zst_file)
-                   if (r := _comment_record(comment)) is not None)
-
-        # Concatenate every 5 batches to avoid accumulating too many in memory
-        batch_group = []
-        for batch_df in _dataframe_batches(records, columns):
-            batch_group.append(batch_df)
-            if len(batch_group) >= 5:
-                merged = pd.concat(batch_group, ignore_index=True)
-                all_frames.append(merged)
-                batch_group.clear()
-        # Handle remaining batches
-        if batch_group:
-            merged = pd.concat(batch_group, ignore_index=True)
-            all_frames.append(merged)
-
-    if not all_frames:
-        return pd.DataFrame(columns=columns)
-    return pd.concat(all_frames, ignore_index=True)
+def _submission_record(post):
+    """Extract a submission record dict from a raw JSON post object."""
+    post_id = post.get('id', '')
+    if not post_id:
+        return None
+    ts = post.get('created_utc', 0)
+    return {
+        'id': post_id,
+        'subreddit': post.get('subreddit', ''),
+        'title': post.get('title', ''),
+        'selftext': post.get('selftext', ''),
+        'author_hash': _hash_author(post.get('author', '')),
+        'score': post.get('score', 0),
+        'upvote_ratio': post.get('upvote_ratio', None),
+        'num_comments': post.get('num_comments', 0),
+        'created_utc': ts,
+        'created_date': _utc_date(ts),
+        'url': post.get('url', ''),
+        'is_self': post.get('is_self', False),
+        'permalink': post.get('permalink', ''),
+    }
 
 
-def load_and_analyze_data():
-    """
-    Load data from zst archives (historical seed data) and 2026 CSV files (new data).
-    Combines both sources and deduplicates by ID.
+def _comment_record(comment):
+    """Extract a comment record dict from a raw JSON comment object."""
+    comment_id = comment.get('id', '')
+    if not comment_id:
+        return None
+    ts = comment.get('created_utc', 0)
+    return {
+        'id': comment_id,
+        'subreddit': comment.get('subreddit', ''),
+        'body': comment.get('body', ''),
+        'author_hash': _hash_author(comment.get('author', '')),
+        'score': comment.get('score', 0),
+        'created_utc': ts,
+        'created_date': _utc_date(ts),
+        'parent_id': comment.get('parent_id', ''),
+        'link_id': comment.get('link_id', ''),
+    }
+
+
+def _add_sentiment_columns(df, text_column):
+    """Run VADER sentiment on *text_column* and add category columns in-place."""
+    df['sentiment_score'] = df[text_column].apply(analyze_sentiment)
+    df['sentiment_category'] = df['sentiment_score'].apply(categorize_sentiment)
+    df['category'] = df['subreddit'].apply(
+        lambda x: 'Autism' if str(x).lower() in _AUTISM_SUBREDDITS else 'ADHD'
+    )
+
+
+def process_and_save_sentiment():
+    """Load all sources, run VADER sentiment, and save CSVs in constant memory.
+
+    Each zst file is streamed in 50 000-row batches.  After sentiment is
+    computed for a batch it is appended to the output CSV and freed, so peak
+    RAM stays proportional to one batch rather than the full dataset.
+
+    The 2026 CSV data is written first so that it takes priority when
+    duplicates exist (matching the original ``keep='last'`` behaviour —
+    zst rows whose id already appeared in the 2026 CSV are skipped).
     """
     data_dir = Path("data")
+    sub_output = Path("reddit_submissions_with_sentiment_2026.csv")
+    com_output = Path("reddit_comments_with_sentiment_2026.csv")
 
-    print("Loading submissions from zst archives (historical seed data)...")
-    submissions_df = load_submissions_from_zst(data_dir)
+    # ---- Submissions --------------------------------------------------------
+    print("Processing submissions...")
+    seen_ids = set()
+    header_written = False
+    total = 0
 
-    print("\nLoading comments from zst archives (historical seed data)...")
-    comments_df = load_comments_from_zst(data_dir)
-
-    # Also load 2026 data from CSV files if they exist
-    csv_2026_subs = Path("reddit_submissions_2026.csv")
-    csv_2026_coms = Path("reddit_comments_2026.csv")
-
-    if csv_2026_subs.exists():
-        print("\nLoading 2026 submissions from CSV...")
+    # 2026 CSV first (takes priority in de-duplication)
+    csv_path = Path("reddit_submissions_2026.csv")
+    if csv_path.exists():
         try:
-            subs_2026 = pd.read_csv(csv_2026_subs)
-            if not subs_2026.empty:
-                print(f"  Found {len(subs_2026)} submissions from 2026")
-                submissions_df = pd.concat([submissions_df, subs_2026], ignore_index=True)
-                submissions_df = submissions_df.drop_duplicates(subset='id', keep='last')
+            df = pd.read_csv(csv_path)
+            if not df.empty:
+                print(f"  2026 CSV: {len(df):,} submissions")
+                df['text'] = (df['title'].fillna('')
+                              + ' ' + df['selftext'].fillna(''))
+                _add_sentiment_columns(df, 'text')
+                df.to_csv(sub_output, index=False)
+                header_written = True
+                seen_ids.update(df['id'].astype(str))
+                total += len(df)
+                del df
+                gc.collect()
         except (pd.errors.EmptyDataError, FileNotFoundError):
             pass
 
-    if csv_2026_coms.exists():
-        print("\nLoading 2026 comments from CSV...")
+    for zst_file in sorted(data_dir.glob("*_submissions.zst")):
+        print(f"  {zst_file.name}...")
+        file_count = 0
+        records = (r for post in _iter_ndjson_zst(zst_file)
+                   if (r := _submission_record(post)) is not None)
+        for batch_df in _dataframe_batches(records, _SUB_COLUMNS):
+            batch_df = batch_df[~batch_df['id'].astype(str).isin(seen_ids)]
+            if batch_df.empty:
+                continue
+            batch_df['text'] = (batch_df['title'].fillna('')
+                                + ' ' + batch_df['selftext'].fillna(''))
+            _add_sentiment_columns(batch_df, 'text')
+            batch_df.to_csv(sub_output, mode='a',
+                            header=not header_written, index=False)
+            header_written = True
+            seen_ids.update(batch_df['id'].astype(str))
+            file_count += len(batch_df)
+            del batch_df
+        total += file_count
+        print(f"    -> {file_count:,} new submissions")
+        gc.collect()
+
+    if total == 0:
+        pd.DataFrame(
+            columns=_SUB_COLUMNS + ['text', 'sentiment_score',
+                                     'sentiment_category', 'category'],
+        ).to_csv(sub_output, index=False)
+        print("  WARNING: no submissions found")
+    else:
+        print(f"  Total submissions: {total:,}")
+
+    del seen_ids
+    gc.collect()
+
+    # ---- Comments -----------------------------------------------------------
+    print("\nProcessing comments...")
+    seen_ids = set()
+    header_written = False
+    total = 0
+
+    csv_path = Path("reddit_comments_2026.csv")
+    if csv_path.exists():
         try:
-            coms_2026 = pd.read_csv(csv_2026_coms)
-            if not coms_2026.empty:
-                print(f"  Found {len(coms_2026)} comments from 2026")
-                comments_df = pd.concat([comments_df, coms_2026], ignore_index=True)
-                comments_df = comments_df.drop_duplicates(subset='id', keep='last')
+            df = pd.read_csv(csv_path)
+            if not df.empty:
+                print(f"  2026 CSV: {len(df):,} comments")
+                _add_sentiment_columns(df, 'body')
+                df.to_csv(com_output, index=False)
+                header_written = True
+                seen_ids.update(df['id'].astype(str))
+                total += len(df)
+                del df
+                gc.collect()
         except (pd.errors.EmptyDataError, FileNotFoundError):
             pass
 
-    if submissions_df.empty:
-        print("ERROR: No submissions found in data/ folder or CSV files")
-        return pd.DataFrame(), pd.DataFrame()
+    for zst_file in sorted(data_dir.glob("*_comments.zst")):
+        print(f"  {zst_file.name}...")
+        file_count = 0
+        records = (r for comment in _iter_ndjson_zst(zst_file)
+                   if (r := _comment_record(comment)) is not None)
+        for batch_df in _dataframe_batches(records, _COM_COLUMNS):
+            batch_df = batch_df[~batch_df['id'].astype(str).isin(seen_ids)]
+            if batch_df.empty:
+                continue
+            _add_sentiment_columns(batch_df, 'body')
+            batch_df.to_csv(com_output, mode='a',
+                            header=not header_written, index=False)
+            header_written = True
+            seen_ids.update(batch_df['id'].astype(str))
+            file_count += len(batch_df)
+            del batch_df
+        total += file_count
+        print(f"    -> {file_count:,} new comments")
+        gc.collect()
 
-    # Analyze sentiment for submissions
-    print("\nAnalyzing sentiment for submissions...")
-    # Combine title and selftext for submissions
-    submissions_df['text'] = submissions_df['title'].fillna('') + ' ' + submissions_df['selftext'].fillna('')
-    _n_workers = os.cpu_count() or 1
-    _n_sub = len(submissions_df)
-    _chunksize_sub = max(1, _n_sub // _n_workers)
-    submissions_df['sentiment_score'] = process_map(
-        analyze_sentiment, submissions_df['text'],
-        desc="Submissions", chunksize=_chunksize_sub, max_workers=_n_workers,
-    )
-    submissions_df['sentiment_category'] = submissions_df['sentiment_score'].apply(categorize_sentiment)
-
-    # Analyze sentiment for comments
-    if not comments_df.empty:
-        print("\nAnalyzing sentiment for comments...")
-        _n_com = len(comments_df)
-        _chunksize_com = max(1, _n_com // _n_workers)
-        comments_df['sentiment_score'] = process_map(
-            analyze_sentiment, comments_df['body'],
-            desc="Comments", chunksize=_chunksize_com, max_workers=_n_workers,
-        )
-        comments_df['sentiment_category'] = comments_df['sentiment_score'].apply(categorize_sentiment)
-
-    # Convert dates to datetime
-    submissions_df['created_date'] = pd.to_datetime(submissions_df['created_date'])
-    if not comments_df.empty:
-        comments_df['created_date'] = pd.to_datetime(comments_df['created_date'])
-
-    # Add category column for Autism vs ADHD
-    autism_subs = ['autism', 'aspergers', 'aspergirls', 'AutisticAdults']
-    autism_set = {s.lower() for s in autism_subs}
-    submissions_df['category'] = submissions_df['subreddit'].apply(
-        lambda x: 'Autism' if x.lower() in autism_set else 'ADHD'
-    )
-    if not comments_df.empty:
-        comments_df['category'] = comments_df['subreddit'].apply(
-            lambda x: 'Autism' if x.lower() in autism_set else 'ADHD'
-        )
-
-    return submissions_df, comments_df
+    if total == 0:
+        pd.DataFrame(
+            columns=_COM_COLUMNS + ['sentiment_score',
+                                     'sentiment_category', 'category'],
+        ).to_csv(com_output, index=False)
+        print("  WARNING: no comments found")
+    else:
+        print(f"  Total comments: {total:,}")
 
 def create_visualizations(submissions_df, comments_df):
     """
@@ -563,20 +549,40 @@ def main():
     """
     print("Starting sentiment analysis...")
 
-    # Load and analyze data
-    submissions_df, comments_df = load_and_analyze_data()
+    # Phase 1: stream-process all sources and save sentiment CSVs
+    # (constant memory — only one 50k-row batch in memory at a time)
+    process_and_save_sentiment()
 
-    # Save analyzed data
-    print("\nSaving analyzed data...")
-    submissions_df.to_csv('reddit_submissions_with_sentiment_2026.csv', index=False)
-    comments_df.to_csv('reddit_comments_with_sentiment_2026.csv', index=False)
-    print("Saved analyzed data to CSV files")
+    # Phase 2: load processed data for visualisation / statistics.
+    # Only read the columns actually needed to keep memory low.
+    print("\nLoading results for visualization...")
+    sub_path = Path("reddit_submissions_with_sentiment_2026.csv")
+    com_path = Path("reddit_comments_with_sentiment_2026.csv")
+
+    if not sub_path.exists() or sub_path.stat().st_size == 0:
+        print("ERROR: No submission data – cannot create visualizations.")
+        return
+
+    sub_vis_cols = ['subreddit', 'title', 'created_date',
+                    'sentiment_score', 'sentiment_category', 'category']
+    submissions_df = pd.read_csv(sub_path, usecols=sub_vis_cols)
+    submissions_df['created_date'] = pd.to_datetime(
+        submissions_df['created_date'])
+
+    try:
+        com_vis_cols = ['subreddit', 'created_date', 'sentiment_score',
+                        'sentiment_category', 'category']
+        comments_df = pd.read_csv(com_path, usecols=com_vis_cols)
+        comments_df['created_date'] = pd.to_datetime(
+            comments_df['created_date'])
+    except (pd.errors.EmptyDataError, FileNotFoundError, ValueError):
+        comments_df = pd.DataFrame()
 
     # Generate visualizations
     create_visualizations(submissions_df, comments_df)
 
     # Generate statistics
-    stats = generate_statistics(submissions_df, comments_df)
+    generate_statistics(submissions_df, comments_df)
 
     print("\n" + "="*60)
     print("ANALYSIS COMPLETE!")
