@@ -20,6 +20,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_sentiment_analysis:
+        description: 'Run sentiment analysis after data collection'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write           # Required to commit data back to the repo
@@ -175,7 +180,7 @@ jobs:
           fi
 
       - name: Run sentiment analysis
-        if: steps.check_data.outputs.data_collected == 'true'
+        if: steps.check_data.outputs.data_collected == 'true' && (github.event_name == 'schedule' || inputs.run_sentiment_analysis)
         run: |
           # Start background resource monitor – logs every ~30 s while analysis runs.
           (
@@ -207,6 +212,44 @@ jobs:
           kill $MONITOR_PID 2>/dev/null || true
           exit $EXIT_CODE
 
+      - name: Commit and push sentiment analysis results
+        if: steps.check_data.outputs.data_collected == 'true' && (github.event_name == 'schedule' || inputs.run_sentiment_analysis)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add \
+            reddit_submissions_with_sentiment_2026.csv \
+            reddit_comments_with_sentiment_2026.csv \
+            sentiment_analysis_overview.png \
+            sentiment_by_category.png \
+            sentiment_by_subreddit.png
+
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: update sentiment analysis results"
+
+            max_attempts=3
+            for attempt in $(seq 1 $max_attempts); do
+              if git push; then
+                echo "Successfully pushed sentiment analysis results"
+                exit 0
+              else
+                echo "::warning::Push failed (attempt $attempt/$max_attempts) - pulling latest changes"
+                if [ $attempt -lt $max_attempts ]; then
+                  git fetch origin
+                  git rebase origin/$(git remote show origin | grep 'HEAD branch' | cut -d' ' -f5) || {
+                    echo "::error::Rebase failed - manual intervention required"
+                    exit 1
+                  }
+                fi
+              fi
+            done
+
+            echo "::error::Failed to push after $max_attempts attempts"
+            exit 1
+          else
+            echo "No sentiment analysis changes to commit"
+          fi
+
       - name: Update README statistics
         if: steps.check_data.outputs.data_collected == 'true'
         run: python update_readme_stats.py
@@ -219,11 +262,6 @@ jobs:
           git add \
             reddit_submissions_2026.csv \
             reddit_comments_2026.csv \
-            reddit_submissions_with_sentiment_2026.csv \
-            reddit_comments_with_sentiment_2026.csv \
-            sentiment_analysis_overview.png \
-            sentiment_by_category.png \
-            sentiment_by_subreddit.png \
             README.md
 
           # Only commit when there are actual changes.
