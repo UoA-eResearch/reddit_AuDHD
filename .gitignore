@@ -1,3 +1,5 @@
 __pycache__/
 *.py[cod]
 .env
+# Too large for GitHub LFS (>4 GB); regenerated locally from zst archives
+reddit_comments_with_sentiment_2026.csv
