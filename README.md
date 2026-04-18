@@ -28,46 +28,46 @@ Data collection began on 2026-04-09 via Tor (with automatic exit-node rotation).
 
 | Metric | Value |
 |---|---|
-| Total posts | **6,055** |
-| Unique redditors (posts) | **4,421** (counted by hashed author ID) |
-| Autism-community posts | 5,262 (r/autism, r/aspergers, r/aspergirls, r/AutisticAdults) |
-| ADHD-community posts | 793 (r/ADHD, r/ADHDmemes, r/adhdwomen, r/adhd_anxiety) |
-| Date range | 2015-03-29 → 2026-04-14 |
+| Total posts | **2,178,417** |
+| Unique redditors (posts) | **729,822** (counted by hashed author ID) |
+| Autism-community posts | 837,306 (r/autism, r/aspergers, r/aspergirls, r/AutisticAdults) |
+| ADHD-community posts | 1,341,111 (r/ADHD, r/ADHDmemes, r/adhdwomen, r/adhd_anxiety) |
+| Date range | 2008-04-09 → 2026-04-14 |
 
 ### Sentiment Overview (Posts)
 
 | Sentiment | Count | % |
 |---|---|---|
-| Positive (score ≥ 0.05) | 3,247 | 53.6% |
-| Negative (score ≤ −0.05) | 2,277 | 37.6% |
-| Neutral | 531 | 8.8% |
+| Positive (score ≥ 0.05) | 1,025,084 | 47.1% |
+| Negative (score ≤ −0.05) | 764,315 | 35.1% |
+| Neutral | 389,018 | 17.9% |
 
-Average compound score: **0.138** (mildly positive overall)
+Average compound score: **0.103** (mildly positive overall)
 
 ### Sentiment by Community
 
 | Community | Avg. Sentiment |
 |---|---|
-| Autism | 0.142 |
-| ADHD | 0.107 |
+| Autism | 0.131 |
+| ADHD | 0.086 |
 
 ### Sentiment by Subreddit
 
 | Subreddit | Avg. Sentiment |
 |---|---|
-| r/adhdwomen | +0.243 (most positive) |
-| r/aspergirls | +0.207 |
-| r/AutisticAdults | +0.156 |
-| r/autism | +0.136 |
-| r/ADHD | +0.134 |
+| r/AutisticAdults | +0.156 (most positive) |
+| r/aspergirls | +0.148 |
+| r/autism | +0.146 |
+| r/adhdwomen | +0.133 |
 | r/aspergers | +0.087 |
-| r/ADHDmemes | +0.064 |
-| r/adhd_anxiety | -0.015 (only subreddit with net-negative avg.) |
+| r/ADHD | +0.077 |
+| r/ADHDmemes | +0.054 |
+| r/adhd_anxiety | +0.002 (least positive) |
 
 ### Notable Examples
 
-**Most positive post:** *"Does autism make it harder to get over someone?..."*
-(r/aspergirls, sentiment 0.9999)
+**Most positive post:** *"Wife diagnosed with ADHD, any hope for low libido?..."*
+(r/ADHD, sentiment 1.0000)
 
 **Most negative post:** *"anxiety, depression, IBS, ADHD, but no proper relief from pills?"*
 (r/adhd_anxiety, sentiment −0.9997)
@@ -142,14 +142,14 @@ The `data/` directory contains historical Reddit data from Academic Torrents, pr
 
 | Subreddit | Submissions | Size (MB) | Comments | Size (MB) |
 |-----------|------------|-----------|----------|-----------|
-| r/ADHD | 1,050,855 | 355.5 | 9,475,358 | 1,698.4 |
-| r/ADHDmemes | 16,336 | 7.6 | 195,510 | 24.8 |
-| r/AutisticAdults | 56,449 | 32.3 | 804,993 | 166.7 |
-| r/adhd_anxiety | 19,577 | 8.8 | 130,263 | 24.9 |
-| r/adhdwomen | 253,927 | 129.4 | 4,199,060 | 793.3 |
-| r/aspergers | 222,958 | 85.1 | 3,392,339 | 588.6 |
-| r/aspergirls | 58,464 | 24.1 | 765,775 | 153.9 |
-| r/autism | 496,232 | 229.8 | 7,056,844 | 1,138.5 |
+| r/AutisticAdults | +0.156 (most positive) |
+| r/aspergirls | +0.148 |
+| r/autism | +0.146 |
+| r/adhdwomen | +0.133 |
+| r/aspergers | +0.087 |
+| r/ADHD | +0.077 |
+| r/ADHDmemes | +0.054 |
+| r/adhd_anxiety | +0.002 (least positive) |
 | **Total** | **2,174,798** | **864.6** | **26,020,142** | **4,589.1** |
 
 These archives provide historical context spanning multiple years of community discussions. New data collected in 2026 is stored separately in `reddit_submissions_2026.csv` and `reddit_comments_2026.csv` to clearly distinguish from the historical seed data.
