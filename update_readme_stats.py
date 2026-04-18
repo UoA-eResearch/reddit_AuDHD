@@ -225,7 +225,7 @@ def update_readme(stats):
 
     # Replace the subreddit sentiment table
     readme = re.sub(
-        r'(\| Subreddit \| Avg\. Sentiment \|\n\|---|---\|\n)(\| r/.*\n)+',
+        r'(\| Subreddit \| Avg\. Sentiment \|\n\|---\|---\|\n)(\| r/.*\n)+',
         r'\1' + subreddit_table + '\n',
         readme
     )

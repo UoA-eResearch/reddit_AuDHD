@@ -142,14 +142,14 @@ The `data/` directory contains historical Reddit data from Academic Torrents, pr
 
 | Subreddit | Submissions | Size (MB) | Comments | Size (MB) |
 |-----------|------------|-----------|----------|-----------|
-| r/AutisticAdults | +0.156 (most positive) |
-| r/aspergirls | +0.148 |
-| r/autism | +0.146 |
-| r/adhdwomen | +0.133 |
-| r/aspergers | +0.087 |
-| r/ADHD | +0.077 |
-| r/ADHDmemes | +0.054 |
-| r/adhd_anxiety | +0.002 (least positive) |
+| r/ADHD | 1,050,855 | 355.5 | 9,475,358 | 1,698.4 |
+| r/ADHDmemes | 16,336 | 7.6 | 195,510 | 24.8 |
+| r/AutisticAdults | 56,449 | 32.3 | 804,993 | 166.7 |
+| r/adhd_anxiety | 19,577 | 8.8 | 130,263 | 24.9 |
+| r/adhdwomen | 253,927 | 129.4 | 4,199,060 | 793.3 |
+| r/aspergers | 222,958 | 85.1 | 3,392,339 | 588.6 |
+| r/aspergirls | 58,464 | 24.1 | 765,775 | 153.9 |
+| r/autism | 496,232 | 229.8 | 7,056,844 | 1,138.5 |
 | **Total** | **2,174,798** | **864.6** | **26,020,142** | **4,589.1** |
 
 These archives provide historical context spanning multiple years of community discussions. New data collected in 2026 is stored separately in `reddit_submissions_2026.csv` and `reddit_comments_2026.csv` to clearly distinguish from the historical seed data.
