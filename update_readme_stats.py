@@ -60,16 +60,18 @@ def calculate_statistics():
             subreddit_sentiment_sum[sub] = subreddit_sentiment_sum.get(sub, 0.0) + float(grp.sum())
             subreddit_sentiment_count[sub] = subreddit_sentiment_count.get(sub, 0) + len(grp)
 
-        chunk_max_idx = chunk['sentiment_score'].idxmax()
-        chunk_min_idx = chunk['sentiment_score'].idxmin()
-        chunk_max_score = float(chunk.at[chunk_max_idx, 'sentiment_score'])
-        chunk_min_score = float(chunk.at[chunk_min_idx, 'sentiment_score'])
-        if most_positive_score is None or chunk_max_score > most_positive_score:
-            most_positive_score = chunk_max_score
-            most_positive_row = chunk.loc[chunk_max_idx]
-        if most_negative_score is None or chunk_min_score < most_negative_score:
-            most_negative_score = chunk_min_score
-            most_negative_row = chunk.loc[chunk_min_idx]
+        valid_scores = chunk['sentiment_score'].dropna()
+        if not valid_scores.empty:
+            chunk_max_idx = valid_scores.idxmax()
+            chunk_min_idx = valid_scores.idxmin()
+            chunk_max_score = float(chunk.at[chunk_max_idx, 'sentiment_score'])
+            chunk_min_score = float(chunk.at[chunk_min_idx, 'sentiment_score'])
+            if most_positive_score is None or chunk_max_score > most_positive_score:
+                most_positive_score = chunk_max_score
+                most_positive_row = chunk.loc[chunk_max_idx]
+            if most_negative_score is None or chunk_min_score < most_negative_score:
+                most_negative_score = chunk_min_score
+                most_negative_row = chunk.loc[chunk_min_idx]
 
     unique_authors = len(author_hashes)
     adhd_posts = total_posts - autism_posts
@@ -99,8 +101,8 @@ def calculate_statistics():
         'unique_authors': unique_authors,
         'autism_posts': autism_posts,
         'adhd_posts': adhd_posts,
-        'date_min': date_min.strftime('%Y-%m-%d'),
-        'date_max': date_max.strftime('%Y-%m-%d'),
+        'date_min': date_min.strftime('%Y-%m-%d') if date_min is not None else 'N/A',
+        'date_max': date_max.strftime('%Y-%m-%d') if date_max is not None else 'N/A',
         'positive_count': positive_count,
         'positive_pct': positive_pct,
         'negative_count': negative_count,
