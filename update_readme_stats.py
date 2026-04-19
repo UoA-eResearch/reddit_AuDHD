@@ -8,86 +8,37 @@ import re
 from datetime import datetime
 
 CHUNK_SIZE = 50_000
-SUBMISSIONS_FILE = 'reddit_submissions_with_sentiment_2026.csv'
+SUBMISSIONS_FILE = 'reddit_submissions_with_sentiment_2026.parquet'
 USECOLS = ['author_hash', 'subreddit', 'created_date', 'sentiment_category',
            'sentiment_score', 'category', 'title']
 AUTISM_SUBS = {'autism', 'aspergers', 'aspergirls', 'autisticadults'}
 
 
 def calculate_statistics():
-    """Calculate all statistics needed for the README by streaming the CSV in chunks."""
+    """Calculate all statistics needed for the README by reading the parquet file."""
 
-    total_posts = 0
-    author_hashes: set = set()
-    autism_posts = 0
-    date_min = None
-    date_max = None
-    sentiment_cat_counts: dict = {}
-    sentiment_sum = 0.0
-    category_sentiment_sum: dict = {}
-    category_sentiment_count: dict = {}
-    subreddit_sentiment_sum: dict = {}
-    subreddit_sentiment_count: dict = {}
-    most_positive_score = None
-    most_positive_row = None
-    most_negative_score = None
-    most_negative_row = None
+    # Read parquet file with only needed columns (efficient with parquet)
+    df = pd.read_parquet(SUBMISSIONS_FILE, columns=USECOLS)
+    df['created_date'] = pd.to_datetime(df['created_date'])
 
-    for chunk in pd.read_csv(SUBMISSIONS_FILE, chunksize=CHUNK_SIZE, usecols=USECOLS):
-        chunk['created_date'] = pd.to_datetime(chunk['created_date'])
-
-        total_posts += len(chunk)
-        author_hashes.update(chunk['author_hash'].dropna().unique())
-        autism_posts += int(chunk['subreddit'].str.lower().isin(AUTISM_SUBS).sum())
-
-        chunk_min = chunk['created_date'].min()
-        chunk_max = chunk['created_date'].max()
-        if date_min is None or chunk_min < date_min:
-            date_min = chunk_min
-        if date_max is None or chunk_max > date_max:
-            date_max = chunk_max
-
-        for cat, cnt in chunk['sentiment_category'].value_counts().items():
-            sentiment_cat_counts[cat] = sentiment_cat_counts.get(cat, 0) + int(cnt)
-
-        sentiment_sum += float(chunk['sentiment_score'].sum())
-
-        for cat, grp in chunk.groupby('category')['sentiment_score']:
-            category_sentiment_sum[cat] = category_sentiment_sum.get(cat, 0.0) + float(grp.sum())
-            category_sentiment_count[cat] = category_sentiment_count.get(cat, 0) + len(grp)
-
-        for sub, grp in chunk.groupby('subreddit')['sentiment_score']:
-            subreddit_sentiment_sum[sub] = subreddit_sentiment_sum.get(sub, 0.0) + float(grp.sum())
-            subreddit_sentiment_count[sub] = subreddit_sentiment_count.get(sub, 0) + len(grp)
-
-        valid_scores = chunk['sentiment_score'].dropna()
-        if not valid_scores.empty:
-            chunk_max_idx = valid_scores.idxmax()
-            chunk_min_idx = valid_scores.idxmin()
-            chunk_max_score = float(chunk.at[chunk_max_idx, 'sentiment_score'])
-            chunk_min_score = float(chunk.at[chunk_min_idx, 'sentiment_score'])
-            if most_positive_score is None or chunk_max_score > most_positive_score:
-                most_positive_score = chunk_max_score
-                most_positive_row = chunk.loc[chunk_max_idx]
-            if most_negative_score is None or chunk_min_score < most_negative_score:
-                most_negative_score = chunk_min_score
-                most_negative_row = chunk.loc[chunk_min_idx]
-
+    total_posts = len(df)
+    author_hashes = df['author_hash'].dropna().unique()
     unique_authors = len(author_hashes)
+    autism_posts = int(df['subreddit'].str.lower().isin(AUTISM_SUBS).sum())
     adhd_posts = total_posts - autism_posts
+
+    date_min = df['created_date'].min()
+    date_max = df['created_date'].max()
+
+    sentiment_cat_counts = df['sentiment_category'].value_counts().to_dict()
+    sentiment_sum = float(df['sentiment_score'].sum())
     avg_sentiment = sentiment_sum / total_posts if total_posts > 0 else 0.0
 
-    autism_sentiment = (category_sentiment_sum.get('Autism', 0.0) /
-                        category_sentiment_count['Autism']
-                        if 'Autism' in category_sentiment_count else 0.0)
-    adhd_sentiment = (category_sentiment_sum.get('ADHD', 0.0) /
-                      category_sentiment_count['ADHD']
-                      if 'ADHD' in category_sentiment_count else 0.0)
+    category_sentiment = df.groupby('category')['sentiment_score'].mean()
+    autism_sentiment = category_sentiment.get('Autism', 0.0)
+    adhd_sentiment = category_sentiment.get('ADHD', 0.0)
 
-    subreddit_sentiment = pd.Series({
-        sub: subreddit_sentiment_sum[sub] / subreddit_sentiment_count[sub]
-        for sub in subreddit_sentiment_sum
-    }).sort_values(ascending=False)
+    subreddit_sentiment = df.groupby('subreddit')['sentiment_score'].mean().sort_values(ascending=False)
 
     positive_count = sentiment_cat_counts.get('positive', 0)
     negative_count = sentiment_cat_counts.get('negative', 0)
@@ -95,6 +46,12 @@ def calculate_statistics():
     positive_pct = positive_count / total_posts * 100 if total_posts > 0 else 0
     negative_pct = negative_count / total_posts * 100 if total_posts > 0 else 0
     neutral_pct = neutral_count / total_posts * 100 if total_posts > 0 else 0
+
+    valid_scores = df['sentiment_score'].dropna()
+    most_positive_idx = valid_scores.idxmax()
+    most_negative_idx = valid_scores.idxmin()
+    most_positive_row = df.loc[most_positive_idx]
+    most_negative_row = df.loc[most_negative_idx]
 
     return {
         'total_posts': total_posts,
@@ -262,7 +219,7 @@ def update_readme(stats):
 
 def main():
     """Main function."""
-    print("Calculating statistics (streaming CSV in chunks)...")
+    print("Calculating statistics (reading parquet file)...")
     stats = calculate_statistics()
 
     print("Updating README.md...")
