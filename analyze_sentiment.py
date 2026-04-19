@@ -146,7 +146,10 @@ def _submission_record(post):
     post_id = post.get('id', '')
     if not post_id:
         return None
-    ts = post.get('created_utc', 0)
+    try:
+        ts = int(post.get('created_utc', 0))
+    except (TypeError, ValueError):
+        ts = 0
     return {
         'id': post_id,
         'subreddit': post.get('subreddit', ''),
@@ -169,7 +172,10 @@ def _comment_record(comment):
     comment_id = comment.get('id', '')
     if not comment_id:
         return None
-    ts = comment.get('created_utc', 0)
+    try:
+        ts = int(comment.get('created_utc', 0))
+    except (TypeError, ValueError):
+        ts = 0
     return {
         'id': comment_id,
         'subreddit': comment.get('subreddit', ''),
