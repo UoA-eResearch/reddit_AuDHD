@@ -7,6 +7,7 @@ Data sources:
 2. 2026 data: CSV files (reddit_submissions_2026.csv, reddit_comments_2026.csv)
 
 Combines both sources, deduplicates by ID, and performs sentiment analysis.
+Results are saved in parquet format for efficient storage and loading.
 """
 
 import gc
@@ -192,24 +193,24 @@ def _add_sentiment_columns(df, text_column):
 
 
 def process_and_save_sentiment():
-    """Load all sources, run VADER sentiment, and save CSVs in constant memory.
+    """Load all sources, run VADER sentiment, and save parquet files in constant memory.
 
     Each zst file is streamed in 50,000-row batches.  After sentiment is
-    computed for a batch it is appended to the output CSV and freed, so peak
-    RAM stays proportional to one batch rather than the full dataset.
+    computed for a batch it is accumulated in memory and written to parquet,
+    so peak RAM stays proportional to the batches processed.
 
     The 2026 CSV data is written first so that it takes priority when
     duplicates exist (matching the original ``keep='last'`` behaviour —
     zst rows whose id already appeared in the 2026 CSV are skipped).
     """
     data_dir = Path("data")
-    sub_output = Path("reddit_submissions_with_sentiment_2026.csv")
-    com_output = Path("reddit_comments_with_sentiment_2026.csv")
+    sub_output = Path("reddit_submissions_with_sentiment_2026.parquet")
+    com_output = Path("reddit_comments_with_sentiment_2026.parquet")
 
     # ---- Submissions --------------------------------------------------------
     print("Processing submissions...")
     seen_ids = set()
-    header_written = False
+    all_dfs = []
     total = 0
 
     # 2026 CSV first (takes priority in de-duplication)
@@ -222,8 +223,7 @@ def process_and_save_sentiment():
                 df['text'] = (df['title'].fillna('')
                               + ' ' + df['selftext'].fillna(''))
                 _add_sentiment_columns(df, 'text')
-                df.to_csv(sub_output, index=False)
-                header_written = True
+                all_dfs.append(df)
                 seen_ids.update(df['id'].astype(str))
                 total += len(df)
                 del df
@@ -243,9 +243,7 @@ def process_and_save_sentiment():
             batch_df['text'] = (batch_df['title'].fillna('')
                                 + ' ' + batch_df['selftext'].fillna(''))
             _add_sentiment_columns(batch_df, 'text')
-            batch_df.to_csv(sub_output, mode='a',
-                            header=not header_written, index=False)
-            header_written = True
+            all_dfs.append(batch_df)
             seen_ids.update(batch_df['id'].astype(str))
             file_count += len(batch_df)
             del batch_df
@@ -257,10 +255,16 @@ def process_and_save_sentiment():
         pd.DataFrame(
             columns=_SUB_COLUMNS + ['text', 'sentiment_score',
                                      'sentiment_category', 'category'],
-        ).to_csv(sub_output, index=False)
+        ).to_parquet(sub_output, index=False)
         print("  WARNING: no submissions found")
     else:
         print(f"  Total submissions: {total:,}")
+        print(f"  Writing parquet file...")
+        result_df = pd.concat(all_dfs, ignore_index=True)
+        result_df.to_parquet(sub_output, index=False)
+        del result_df
+        del all_dfs
+        gc.collect()
 
     del seen_ids
     gc.collect()
@@ -268,7 +272,7 @@ def process_and_save_sentiment():
     # ---- Comments -----------------------------------------------------------
     print("\nProcessing comments...")
     seen_ids = set()
-    header_written = False
+    all_dfs = []
     total = 0
 
     csv_path = Path("reddit_comments_2026.csv")
@@ -278,8 +282,7 @@ def process_and_save_sentiment():
             if not df.empty:
                 print(f"  2026 CSV: {len(df):,} comments")
                 _add_sentiment_columns(df, 'body')
-                df.to_csv(com_output, index=False)
-                header_written = True
+                all_dfs.append(df)
                 seen_ids.update(df['id'].astype(str))
                 total += len(df)
                 del df
@@ -297,9 +300,7 @@ def process_and_save_sentiment():
             if batch_df.empty:
                 continue
             _add_sentiment_columns(batch_df, 'body')
-            batch_df.to_csv(com_output, mode='a',
-                            header=not header_written, index=False)
-            header_written = True
+            all_dfs.append(batch_df)
             seen_ids.update(batch_df['id'].astype(str))
             file_count += len(batch_df)
             del batch_df
@@ -311,10 +312,16 @@ def process_and_save_sentiment():
         pd.DataFrame(
             columns=_COM_COLUMNS + ['sentiment_score',
                                      'sentiment_category', 'category'],
-        ).to_csv(com_output, index=False)
+        ).to_parquet(com_output, index=False)
         print("  WARNING: no comments found")
     else:
         print(f"  Total comments: {total:,}")
+        print(f"  Writing parquet file...")
+        result_df = pd.concat(all_dfs, ignore_index=True)
+        result_df.to_parquet(com_output, index=False)
+        del result_df
+        del all_dfs
+        gc.collect()
 
 def create_visualizations(submissions_df, comments_df):
     """
@@ -556,8 +563,8 @@ def main():
     # Phase 2: load processed data for visualization / statistics.
     # Only read the columns actually needed to keep memory low.
     print("\nLoading results for visualization...")
-    sub_path = Path("reddit_submissions_with_sentiment_2026.csv")
-    com_path = Path("reddit_comments_with_sentiment_2026.csv")
+    sub_path = Path("reddit_submissions_with_sentiment_2026.parquet")
+    com_path = Path("reddit_comments_with_sentiment_2026.parquet")
 
     if not sub_path.exists() or sub_path.stat().st_size == 0:
         print("ERROR: No submission data – cannot create visualizations.")
@@ -565,17 +572,17 @@ def main():
 
     sub_vis_cols = ['subreddit', 'title', 'created_date',
                     'sentiment_score', 'sentiment_category', 'category']
-    submissions_df = pd.read_csv(sub_path, usecols=sub_vis_cols)
+    submissions_df = pd.read_parquet(sub_path, columns=sub_vis_cols)
     submissions_df['created_date'] = pd.to_datetime(
         submissions_df['created_date'])
 
     try:
         com_vis_cols = ['subreddit', 'created_date', 'sentiment_score',
                         'sentiment_category', 'category']
-        comments_df = pd.read_csv(com_path, usecols=com_vis_cols)
+        comments_df = pd.read_parquet(com_path, columns=com_vis_cols)
         comments_df['created_date'] = pd.to_datetime(
             comments_df['created_date'])
-    except (pd.errors.EmptyDataError, FileNotFoundError, ValueError):
+    except (FileNotFoundError, ValueError):
         comments_df = pd.DataFrame()
 
     # Generate visualizations
@@ -588,8 +595,8 @@ def main():
     print("ANALYSIS COMPLETE!")
     print("="*60)
     print("\nGenerated files:")
-    print("- reddit_submissions_with_sentiment_2026.csv")
-    print("- reddit_comments_with_sentiment_2026.csv")
+    print("- reddit_submissions_with_sentiment_2026.parquet")
+    print("- reddit_comments_with_sentiment_2026.parquet")
     print("- sentiment_analysis_overview.png")
     print("- sentiment_by_category.png")
     print("- sentiment_by_subreddit.png")

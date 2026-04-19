@@ -218,7 +218,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add \
-            reddit_submissions_with_sentiment_2026.csv \
+            reddit_submissions_with_sentiment_2026.parquet \
+            reddit_comments_with_sentiment_2026.parquet \
             sentiment_analysis_overview.png \
             sentiment_by_category.png \
             sentiment_by_subreddit.png
