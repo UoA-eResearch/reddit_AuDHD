@@ -149,9 +149,13 @@ def _submission_record(post):
     if not post_id:
         return None
     try:
-        ts = int(post.get('created_utc', 0))
+        ts = float(post.get('created_utc', 0))
     except (TypeError, ValueError):
-        ts = 0
+        ts = 0.0
+    # Get upvote_ratio, defaulting to NaN instead of None for schema consistency
+    upvote_ratio = post.get('upvote_ratio')
+    if upvote_ratio is None:
+        upvote_ratio = float('nan')
     return {
         'id': post_id,
         'subreddit': post.get('subreddit', ''),
@@ -159,7 +163,7 @@ def _submission_record(post):
         'selftext': post.get('selftext', ''),
         'author_hash': _hash_author(post.get('author', '')),
         'score': post.get('score', 0),
-        'upvote_ratio': post.get('upvote_ratio', None),
+        'upvote_ratio': upvote_ratio,
         'num_comments': post.get('num_comments', 0),
         'created_utc': ts,
         'created_date': _utc_date(ts),
@@ -175,9 +179,9 @@ def _comment_record(comment):
     if not comment_id:
         return None
     try:
-        ts = int(comment.get('created_utc', 0))
+        ts = float(comment.get('created_utc', 0))
     except (TypeError, ValueError):
-        ts = 0
+        ts = 0.0
     return {
         'id': comment_id,
         'subreddit': comment.get('subreddit', ''),
@@ -214,6 +218,10 @@ def process_and_save_sentiment():
     data_dir = Path("data")
     sub_output = Path("reddit_submissions_with_sentiment_2026.parquet")
     com_output = Path("reddit_comments_with_sentiment_2026.parquet")
+
+    # Remove old parquet files to ensure clean schema (in case schema changed)
+    sub_output.unlink(missing_ok=True)
+    com_output.unlink(missing_ok=True)
 
     # ---- Submissions --------------------------------------------------------
     print("Processing submissions...")
