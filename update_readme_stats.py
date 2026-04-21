@@ -7,7 +7,6 @@ import pandas as pd
 import re
 from datetime import datetime
 
-CHUNK_SIZE = 50_000
 SUBMISSIONS_FILE = 'reddit_submissions_with_sentiment_2026.parquet'
 USECOLS = ['author_hash', 'subreddit', 'created_date', 'sentiment_category',
            'sentiment_score', 'category', 'title']
@@ -48,10 +47,14 @@ def calculate_statistics():
     neutral_pct = neutral_count / total_posts * 100 if total_posts > 0 else 0
 
     valid_scores = df['sentiment_score'].dropna()
-    most_positive_idx = valid_scores.idxmax()
-    most_negative_idx = valid_scores.idxmin()
-    most_positive_row = df.loc[most_positive_idx]
-    most_negative_row = df.loc[most_negative_idx]
+    if valid_scores.empty:
+        most_positive_row = None
+        most_negative_row = None
+    else:
+        most_positive_idx = valid_scores.idxmax()
+        most_negative_idx = valid_scores.idxmin()
+        most_positive_row = df.loc[most_positive_idx]
+        most_negative_row = df.loc[most_negative_idx]
 
     return {
         'total_posts': total_posts,
@@ -189,19 +192,21 @@ def update_readme(stats):
 
     # Update most positive post
     most_pos = stats['most_positive']
-    readme = re.sub(
-        r'\*\*Most positive post:\*\* \*".*?"\*\n\(r/.*?, sentiment [0-9.-]+\)',
-        f'**Most positive post:** *"{most_pos["title"][:80]}..."*\n(r/{most_pos["subreddit"]}, sentiment {most_pos["sentiment_score"]:.4f})',
-        readme
-    )
+    if most_pos is not None:
+        readme = re.sub(
+            r'\*\*Most positive post:\*\* \*".*?"\*\n\(r/.*?, sentiment [0-9.-]+\)',
+            f'**Most positive post:** *"{most_pos["title"][:80]}..."*\n(r/{most_pos["subreddit"]}, sentiment {most_pos["sentiment_score"]:.4f})',
+            readme
+        )
 
     # Update most negative post
     most_neg = stats['most_negative']
-    readme = re.sub(
-        r'\*\*Most negative post:\*\* \*".*?"\*\n\(r/.*?, sentiment [0-9.-]+\)',
-        f'**Most negative post:** *"{most_neg["title"][:80]}..."*\n(r/{most_neg["subreddit"]}, sentiment {most_neg["sentiment_score"]:.4f})',
-        readme
-    )
+    if most_neg is not None:
+        readme = re.sub(
+            r'\*\*Most negative post:\*\* \*".*?"\*\n\(r/.*?, sentiment [0-9.-]+\)',
+            f'**Most negative post:** *"{most_neg["title"][:80]}..."*\n(r/{most_neg["subreddit"]}, sentiment {most_neg["sentiment_score"]:.4f})',
+            readme
+        )
 
     # Update the note at the bottom of results section
     readme = re.sub(
