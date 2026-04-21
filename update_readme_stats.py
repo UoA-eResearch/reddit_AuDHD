@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
 Script to update README.md with current statistics from the analyzed data.
+
+NOTE: This script uses pandas groupby().mean() for sentiment aggregation, which
+automatically excludes NaN values. This is the intended behavior for calculating
+average sentiment scores from valid data.
 """
 
 import pandas as pd
+import pyarrow.parquet as pq
+import pyarrow.compute as pc
 import re
 from datetime import datetime
 
-CHUNK_SIZE = 50_000
 SUBMISSIONS_FILE = 'reddit_submissions_with_sentiment_2026.parquet'
 USECOLS = ['author_hash', 'subreddit', 'created_date', 'sentiment_category',
            'sentiment_score', 'category', 'title']
@@ -15,7 +20,13 @@ AUTISM_SUBS = {'autism', 'aspergers', 'aspergirls', 'autisticadults'}
 
 
 def calculate_statistics():
-    """Calculate all statistics needed for the README by reading the parquet file."""
+    """Calculate all statistics needed for the README by reading the parquet file.
+
+    NOTE: This function loads the entire dataset into memory for aggregation.
+    Column selection (via USECOLS) minimizes memory usage, but for very large
+    datasets (multi-GB parquet files), consider using pyarrow.dataset.Scanner
+    with streaming aggregations if GitHub Actions runs out of memory.
+    """
 
     # Read parquet file with only needed columns (efficient with parquet)
     df = pd.read_parquet(SUBMISSIONS_FILE, columns=USECOLS)
@@ -34,6 +45,8 @@ def calculate_statistics():
     sentiment_sum = float(df['sentiment_score'].sum())
     avg_sentiment = sentiment_sum / total_posts if total_posts > 0 else 0.0
 
+    # Note: groupby().mean() automatically excludes NaN values, which is the
+    # intended behavior for calculating average sentiment from valid scores.
     category_sentiment = df.groupby('category')['sentiment_score'].mean()
     autism_sentiment = category_sentiment.get('Autism', 0.0)
     adhd_sentiment = category_sentiment.get('ADHD', 0.0)
@@ -48,10 +61,14 @@ def calculate_statistics():
     neutral_pct = neutral_count / total_posts * 100 if total_posts > 0 else 0
 
     valid_scores = df['sentiment_score'].dropna()
-    most_positive_idx = valid_scores.idxmax()
-    most_negative_idx = valid_scores.idxmin()
-    most_positive_row = df.loc[most_positive_idx]
-    most_negative_row = df.loc[most_negative_idx]
+    if valid_scores.empty:
+        most_positive_row = None
+        most_negative_row = None
+    else:
+        most_positive_idx = valid_scores.idxmax()
+        most_negative_idx = valid_scores.idxmin()
+        most_positive_row = df.loc[most_positive_idx]
+        most_negative_row = df.loc[most_negative_idx]
 
     return {
         'total_posts': total_posts,
@@ -189,19 +206,21 @@ def update_readme(stats):
 
     # Update most positive post
     most_pos = stats['most_positive']
-    readme = re.sub(
-        r'\*\*Most positive post:\*\* \*".*?"\*\n\(r/.*?, sentiment [0-9.-]+\)',
-        f'**Most positive post:** *"{most_pos["title"][:80]}..."*\n(r/{most_pos["subreddit"]}, sentiment {most_pos["sentiment_score"]:.4f})',
-        readme
-    )
+    if most_pos is not None:
+        readme = re.sub(
+            r'\*\*Most positive post:\*\* \*".*?"\*\n\(r/.*?, sentiment [0-9.-]+\)',
+            f'**Most positive post:** *"{most_pos["title"][:80]}..."*\n(r/{most_pos["subreddit"]}, sentiment {most_pos["sentiment_score"]:.4f})',
+            readme
+        )
 
     # Update most negative post
     most_neg = stats['most_negative']
-    readme = re.sub(
-        r'\*\*Most negative post:\*\* \*".*?"\*\n\(r/.*?, sentiment [0-9.-]+\)',
-        f'**Most negative post:** *"{most_neg["title"][:80]}..."*\n(r/{most_neg["subreddit"]}, sentiment {most_neg["sentiment_score"]:.4f})',
-        readme
-    )
+    if most_neg is not None:
+        readme = re.sub(
+            r'\*\*Most negative post:\*\* \*".*?"\*\n\(r/.*?, sentiment [0-9.-]+\)',
+            f'**Most negative post:** *"{most_neg["title"][:80]}..."*\n(r/{most_neg["subreddit"]}, sentiment {most_neg["sentiment_score"]:.4f})',
+            readme
+        )
 
     # Update the note at the bottom of results section
     readme = re.sub(

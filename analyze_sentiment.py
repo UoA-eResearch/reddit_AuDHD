@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import matplotlib.pyplot as plt
 import seaborn as sns
 import zstandard
@@ -199,11 +201,11 @@ def _add_sentiment_columns(df, text_column):
 
 
 def process_and_save_sentiment():
-    """Load all sources, run VADER sentiment, and save parquet files in constant memory.
+    """Load all sources, run VADER sentiment, and save parquet files using incremental writes.
 
     Each zst file is streamed in 50,000-row batches.  After sentiment is
-    computed for a batch it is accumulated in memory and written to parquet,
-    so peak RAM stays proportional to the batches processed.
+    computed for a batch it is written directly to the parquet file using
+    pyarrow's ParquetWriter, so peak RAM stays proportional to a single batch.
 
     The 2026 CSV data is written first so that it takes priority when
     duplicates exist (matching the original ``keep='last'`` behaviour —
@@ -216,8 +218,8 @@ def process_and_save_sentiment():
     # ---- Submissions --------------------------------------------------------
     print("Processing submissions...")
     seen_ids = set()
-    all_dfs = []
     total = 0
+    writer = None
 
     # 2026 CSV first (takes priority in de-duplication)
     csv_path = Path("reddit_submissions_2026.csv")
@@ -229,10 +231,13 @@ def process_and_save_sentiment():
                 df['text'] = (df['title'].fillna('')
                               + ' ' + df['selftext'].fillna(''))
                 _add_sentiment_columns(df, 'text')
-                all_dfs.append(df)
+                # Initialize writer with schema from first batch
+                table = pa.Table.from_pandas(df)
+                writer = pq.ParquetWriter(sub_output, table.schema)
+                writer.write_table(table)
                 seen_ids.update(df['id'].astype(str))
                 total += len(df)
-                del df
+                del df, table
                 gc.collect()
         except (pd.errors.EmptyDataError, FileNotFoundError):
             pass
@@ -249,28 +254,30 @@ def process_and_save_sentiment():
             batch_df['text'] = (batch_df['title'].fillna('')
                                 + ' ' + batch_df['selftext'].fillna(''))
             _add_sentiment_columns(batch_df, 'text')
-            all_dfs.append(batch_df)
+            # Write batch directly to parquet
+            table = pa.Table.from_pandas(batch_df)
+            if writer is None:
+                # Initialize writer if we skipped CSV
+                writer = pq.ParquetWriter(sub_output, table.schema)
+            writer.write_table(table)
             seen_ids.update(batch_df['id'].astype(str))
             file_count += len(batch_df)
-            del batch_df
+            del batch_df, table
         total += file_count
         print(f"    -> {file_count:,} new submissions")
         gc.collect()
 
-    if total == 0:
+    # Close the writer or create empty file
+    if writer is not None:
+        writer.close()
+        print(f"  Total submissions: {total:,}")
+    else:
+        # No data at all - create empty parquet
         pd.DataFrame(
             columns=_SUB_COLUMNS + ['text', 'sentiment_score',
                                      'sentiment_category', 'category'],
         ).to_parquet(sub_output, index=False)
         print("  WARNING: no submissions found")
-    else:
-        print(f"  Total submissions: {total:,}")
-        print(f"  Writing parquet file...")
-        result_df = pd.concat(all_dfs, ignore_index=True)
-        result_df.to_parquet(sub_output, index=False)
-        del result_df
-        del all_dfs
-        gc.collect()
 
     del seen_ids
     gc.collect()
@@ -278,8 +285,8 @@ def process_and_save_sentiment():
     # ---- Comments -----------------------------------------------------------
     print("\nProcessing comments...")
     seen_ids = set()
-    all_dfs = []
     total = 0
+    writer = None
 
     csv_path = Path("reddit_comments_2026.csv")
     if csv_path.exists():
@@ -288,10 +295,13 @@ def process_and_save_sentiment():
             if not df.empty:
                 print(f"  2026 CSV: {len(df):,} comments")
                 _add_sentiment_columns(df, 'body')
-                all_dfs.append(df)
+                # Initialize writer with schema from first batch
+                table = pa.Table.from_pandas(df)
+                writer = pq.ParquetWriter(com_output, table.schema)
+                writer.write_table(table)
                 seen_ids.update(df['id'].astype(str))
                 total += len(df)
-                del df
+                del df, table
                 gc.collect()
         except (pd.errors.EmptyDataError, FileNotFoundError):
             pass
@@ -306,28 +316,30 @@ def process_and_save_sentiment():
             if batch_df.empty:
                 continue
             _add_sentiment_columns(batch_df, 'body')
-            all_dfs.append(batch_df)
+            # Write batch directly to parquet
+            table = pa.Table.from_pandas(batch_df)
+            if writer is None:
+                # Initialize writer if we skipped CSV
+                writer = pq.ParquetWriter(com_output, table.schema)
+            writer.write_table(table)
             seen_ids.update(batch_df['id'].astype(str))
             file_count += len(batch_df)
-            del batch_df
+            del batch_df, table
         total += file_count
         print(f"    -> {file_count:,} new comments")
         gc.collect()
 
-    if total == 0:
+    # Close the writer or create empty file
+    if writer is not None:
+        writer.close()
+        print(f"  Total comments: {total:,}")
+    else:
+        # No data at all - create empty parquet
         pd.DataFrame(
             columns=_COM_COLUMNS + ['sentiment_score',
                                      'sentiment_category', 'category'],
         ).to_parquet(com_output, index=False)
         print("  WARNING: no comments found")
-    else:
-        print(f"  Total comments: {total:,}")
-        print(f"  Writing parquet file...")
-        result_df = pd.concat(all_dfs, ignore_index=True)
-        result_df.to_parquet(com_output, index=False)
-        del result_df
-        del all_dfs
-        gc.collect()
 
 def create_visualizations(submissions_df, comments_df):
     """
